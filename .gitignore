@@ -1,0 +1,21 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Build output
+node_modules/
+dist/
+target/
+src-tauri/target/
+src-tauri/gen/
+
+# Local data & tooling
+*.db
+*.sqlite
+.playwright-artifacts/
+.vscode/
+.idea/
+*.log
+.DS_Store
+Thumbs.db
