@@ -54,8 +54,11 @@ export type Lesson = {
   phase: string;
   module: string;
   title: string;
+  /** The lesson's topics, in teaching order. */
   objectives: string[];
   status: LessonStatus;
+  /** 0-based index of the topic the tutor has reached. */
+  topic_idx: number;
 };
 export type Phase = { title: string; goal: string; modules: { title: string; tested_out: boolean }[] };
 export type Curriculum = { id: number; title: string; summary: string; phases: Phase[]; lessons: Lesson[] };
@@ -66,14 +69,21 @@ export type TrackDetail = {
   curriculum: Curriculum | null;
 };
 export type Source = { chunk_id: number; title: string; path: string; page: number | null; text: string; score: number };
-export type Message = { id: number; role: "user" | "assistant"; content: string; sources: Source[]; created_at: string };
+export type Message = {
+  id: number;
+  role: "user" | "assistant";
+  content: string;
+  sources: Source[];
+  created_at: string;
+  topic_idx: number | null;
+};
 export type LessonView = { lesson: Lesson; messages: Message[]; prev_id: number | null; next_id: number | null };
 export type IngestProgress = { folder_id: number; stage: string; done: number; total: number; current: string };
 export type IngestReport = { scanned: number; updated: number; removed: number; chunks_embedded: number; failed: string[] };
 export type ChatEvent =
   | { type: "sources"; sources: Source[] }
   | { type: "delta"; text: string }
-  | { type: "done"; messageId: number; provider: string; costUsd: number }
+  | { type: "done"; messageId: number; provider: string; costUsd: number; topicIdx: number }
   | { type: "error"; message: string };
 
 export const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -180,8 +190,9 @@ function mockCurriculum(): Curriculum {
         phase,
         module,
         title,
-        objectives: ["Explain the idea in your own words", "Write a small working example", "Spot the common mistake"],
+        objectives: ["Routes and URL rules", "HTTP methods on a route", "Returning JSON", "Status codes", "Blueprints"],
         status: module === "Python for the web" ? "skipped" : ord < 5 ? "done" : ord === 5 ? "in_progress" : "todo",
+        topic_idx: ord === 5 ? 1 : ord < 5 ? 4 : 0,
       });
       ord++;
     });
@@ -220,9 +231,25 @@ You already did this in your Tech With Tim project [S2]. Notice that returning a
 
 **Check:** what status code does Flask send if a client calls \`POST /api/items\` on the route above?`;
 
+const mockReply2 = `✅ Right: Flask answers **405 Method Not Allowed**, because the route only accepts \`GET\`.
+
+To accept both, list them and branch on \`request.method\`:
+
+\`\`\`python
+@app.route("/api/items", methods=["GET", "POST"])
+def items():
+    if request.method == "POST":
+        return {"created": True}, 201
+    return {"items": []}
+\`\`\`
+
+**Check:** which status code did we return for a successful \`POST\`, and why that one?`;
+
 let mockMessages: Message[] = [
-  { id: 1, role: "user", content: "", sources: [], created_at: "" },
-  { id: 2, role: "assistant", content: mockReply, sources: mockSources, created_at: "" },
+  { id: 1, role: "user", content: "", sources: [], created_at: "", topic_idx: null },
+  { id: 2, role: "assistant", content: mockReply, sources: mockSources, created_at: "", topic_idx: 0 },
+  { id: 3, role: "user", content: "A 405 Method Not Allowed?", sources: [], created_at: "", topic_idx: null },
+  { id: 4, role: "assistant", content: mockReply2, sources: mockSources.slice(0, 2), created_at: "", topic_idx: 1 },
 ];
 
 async function mock<T>(cmd: string, args: Record<string, unknown>): Promise<T> {
@@ -283,15 +310,15 @@ async function mock<T>(cmd: string, args: Record<string, unknown>): Promise<T> {
 
 async function mockChat(text: string, onEvent: (e: ChatEvent) => void) {
   onEvent({ type: "sources", sources: mockSources });
-  const words = mockReply.split(/(\s+)/);
+  const words = ("[[topic:2]]\n" + mockReply2).split(/(\s+)/);
   for (const w of words) {
     await new Promise((r) => setTimeout(r, 8));
     onEvent({ type: "delta", text: w });
   }
   mockMessages = [
     ...mockMessages,
-    { id: Date.now(), role: "user", content: text, sources: [], created_at: "" },
-    { id: Date.now() + 1, role: "assistant", content: mockReply, sources: mockSources, created_at: "" },
+    { id: Date.now(), role: "user", content: text, sources: [], created_at: "", topic_idx: null },
+    { id: Date.now() + 1, role: "assistant", content: mockReply2, sources: mockSources, created_at: "", topic_idx: 1 },
   ];
-  onEvent({ type: "done", messageId: Date.now(), provider: "Mock · browser", costUsd: 0 });
+  onEvent({ type: "done", messageId: Date.now(), provider: "Mock · browser", costUsd: 0, topicIdx: 1 });
 }

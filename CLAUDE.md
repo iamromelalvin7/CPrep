@@ -26,4 +26,6 @@
 
 If the app is running, `cargo test` can't overwrite `target/debug/cprep.exe`: use `CARGO_TARGET_DIR=target-test`.
 
+**Lesson topics (2026-11-16):** a lesson's `objectives` are its ordered topics. The tutor starts every reply with `[[topic:N]]` (1-based); `tutor::parse_topic` strips it and stores 0-based `messages.topic_idx`, and `lessons.topic_idx` only moves forward. The user turn carries `<lesson_state>` so the system prompt stays cacheable. In a lesson the sidebar becomes `CourseNav` (topics: done=jump back, current, locked). The sidebar collapses (localStorage `cprep.sidebar`). No emoji: the prompt forbids them and `icons.tsx` swaps any that slip through for SVGs. Tab in the reply box indents; Esc then Tab leaves.
+
 **Next:** Phase 1 — Code lab (Monaco + local runner + AI grading), notes saved as `.md`.

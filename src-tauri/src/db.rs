@@ -181,6 +181,19 @@ pub fn init(conn: &Connection) -> Result<()> {
         );
         "#,
     )?;
+    add_column(conn, "lessons", "topic_idx", "INTEGER NOT NULL DEFAULT 0")?;
+    add_column(conn, "messages", "topic_idx", "INTEGER")?;
+    Ok(())
+}
+
+/// SQLite has no ADD COLUMN IF NOT EXISTS.
+fn add_column(conn: &Connection, table: &str, column: &str, decl: &str) -> Result<()> {
+    let exists = conn
+        .prepare(&format!("SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?1"))?
+        .exists([column])?;
+    if !exists {
+        conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"))?;
+    }
     Ok(())
 }
 

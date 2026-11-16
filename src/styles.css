@@ -623,3 +623,182 @@ button { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
 
 /* Dark scrollbars in the Windows webview */
 * { scrollbar-color: rgba(233, 229, 217, 0.18) transparent; scrollbar-width: thin; }
+
+/* ---------- Collapsible sidebar ---------- */
+
+.sidebar-head { display: flex; align-items: flex-start; justify-content: space-between; padding-right: 10px; }
+.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 32px; height: 32px;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  transition: background-color 160ms var(--ease-out), color 160ms var(--ease-out);
+}
+.icon-btn:hover { background: rgba(233, 229, 217, 0.06); color: var(--text-primary); }
+.collapse-btn { margin-top: 16px; }
+
+.rail { display: none; }
+@media (min-width: 821px) {
+  .shell[data-collapsed="true"] { grid-template-columns: 52px 1fr; }
+  .shell[data-collapsed="true"] .sidebar { display: none; }
+  .shell[data-collapsed="true"] .rail {
+    display: flex;
+    justify-content: center;
+    padding-top: 14px;
+    background: var(--bg-sunken);
+    border-right: 1px solid var(--line);
+  }
+}
+
+/* ---------- Course map in the sidebar ---------- */
+
+.course-nav { flex: 1; min-height: 0; overflow-y: auto; padding: 0 10px 12px; }
+.nav-back {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 0; background: none; cursor: pointer;
+  color: var(--text-muted); font-size: 0.82rem;
+  padding: 4px 10px; border-radius: var(--radius-s);
+  transition: color 160ms var(--ease-out), background-color 160ms var(--ease-out);
+}
+.nav-back:hover { color: var(--text-primary); background: rgba(233, 229, 217, 0.04); }
+.course-name {
+  font-family: var(--font-display);
+  font-size: 1.1rem;
+  line-height: 1.25;
+  padding: 8px 10px 12px;
+  text-wrap: balance;
+}
+.nav-phase { border-top: 1px solid var(--line); }
+.nav-phase-head {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 14px 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 10px;
+  border: 0; background: none; cursor: pointer; text-align: left;
+  color: var(--text-primary);
+  font-weight: 500;
+  font-size: 0.88rem;
+}
+.nav-chevron { color: var(--text-faint); transition: transform 180ms var(--ease-out); }
+.nav-phase-head[aria-expanded="true"] .nav-chevron { transform: rotate(90deg); }
+.nav-phase-body { padding-bottom: 8px; }
+.nav-module { font-size: 0.74rem; color: var(--text-faint); padding: 8px 10px 2px 32px; }
+.nav-lesson {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 12px 1fr;
+  gap: 10px;
+  align-items: start;
+  padding: 6px 10px 6px 32px;
+  border: 0; background: none; cursor: pointer; text-align: left;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  line-height: 1.35;
+  border-radius: var(--radius-s);
+  transition: background-color 160ms var(--ease-out), color 160ms var(--ease-out);
+}
+.nav-lesson .status-mark { margin-top: 3px; }
+.nav-lesson:hover { background: rgba(233, 229, 217, 0.04); color: var(--text-primary); }
+.nav-lesson[aria-current="page"] { background: var(--bg-raised); color: var(--text-primary); }
+
+.nav-topics { list-style: none; margin: 2px 0 6px; padding: 0 0 0 38px; position: relative; }
+.nav-topics::before {
+  content: "";
+  position: absolute;
+  left: 43px; top: 10px; bottom: 10px;
+  width: 1px;
+  background: var(--line-strong);
+}
+.nav-topic {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 12px 1fr;
+  gap: 10px;
+  align-items: start;
+  padding: 5px 8px 5px 0;
+  border: 0; background: none; text-align: left;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  color: var(--text-muted);
+  cursor: pointer;
+  position: relative;
+}
+.nav-topic[aria-disabled="true"] { cursor: default; }
+.nav-topic:not([aria-disabled="true"]):hover { color: var(--text-primary); }
+.nav-topic[data-state="current"] { color: var(--text-primary); font-weight: 500; }
+.nav-topic[data-state="locked"] { color: var(--text-faint); }
+.topic-mark {
+  width: 12px; height: 16px;
+  display: grid; place-items: center;
+  background: var(--bg-sunken);
+  position: relative; z-index: 1;
+}
+.nav-topic[data-state="done"] .topic-mark { color: var(--ok); }
+.topic-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent-primary);
+  box-shadow: 0 0 0 3px rgba(240, 195, 90, 0.18);
+}
+
+/* ---------- Topics inside the lesson ---------- */
+
+.intro-topics { margin: 0; padding-left: 1.4em; color: var(--text-muted); }
+.intro-topics li { margin: 3px 0; }
+.intro-topics li[data-state="done"] { color: var(--text-faint); text-decoration: line-through; text-decoration-color: rgba(233, 229, 217, 0.25); }
+.intro-topics li[data-state="current"] { color: var(--text-primary); }
+.intro-topics li[data-state="current"]::marker { color: var(--accent-primary); }
+
+.topic-divider {
+  max-width: calc(66ch + 56px);
+  margin: 28px 28px 4px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  scroll-margin-top: 16px;
+}
+.topic-divider span { color: var(--accent-primary); font-weight: 600; margin-right: 6px; }
+
+.composer-label { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
+.composer-label .keys { color: var(--text-faint); font-size: 0.75rem; }
+.composer textarea { font-family: var(--font-ui); tab-size: 4; }
+
+.md-icon {
+  display: inline-grid;
+  place-items: center;
+  vertical-align: -0.12em;
+  margin-right: 0.3em;
+  color: var(--accent-primary);
+}
+.md-icon[data-icon="check"] { color: var(--ok); }
+.md-icon[data-icon="cross"], .md-icon[data-icon="warning"] { color: var(--danger); }
+
+/* ---------- Lesson complete ---------- */
+
+.celebrate {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  background: rgba(18, 25, 22, 0.72);
+  backdrop-filter: blur(3px);
+  cursor: pointer;
+}
+.celebrate-card { display: grid; justify-items: center; gap: 4px; text-align: center; padding: 24px; }
+.celebrate-title { font-family: var(--font-display); font-size: 2rem; line-height: 1.1; margin-top: 6px; }
+
+@media (max-width: 820px) {
+  .collapse-btn { display: none; }
+  .topic-divider { margin-inline: 16px; }
+  .composer-label .keys { display: none; }
+}
+
+/* Show code exactly as typed: no == or -> ligatures while learning syntax. */
+code, pre, .folder-path, .code-inline { font-variant-ligatures: none; font-feature-settings: "calt" 0, "liga" 0; }

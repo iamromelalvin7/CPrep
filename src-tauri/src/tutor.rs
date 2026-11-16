@@ -300,7 +300,8 @@ pub async fn design_curriculum(
 ) -> Result<(Curriculum, Usage)> {
     let system = "You are a senior engineer designing a from-the-ground-up, project-driven course for one \
         student preparing for internships and remote software roles. Order topics so each builds on the last. \
-        Lessons are 30-60 minute sessions with 2-4 concrete, checkable objectives each. \
+        Lessons are 30-60 minute sessions. Each lesson's `objectives` is its ordered list of 3-6 topics, each a short \
+        phrase naming what gets taught (e.g. \"Primitive types and operators\", \"Conditional statements\", \"Loops\"). \
         Mark a module `tested_out: true` only when the placement results show the learner already knows it.";
     let placement_s = match placement {
         Some(p) => format!(
@@ -376,8 +377,11 @@ pub struct Lesson {
     pub phase: String,
     pub module: String,
     pub title: String,
+    /// The lesson's topics, taught in order.
     pub objectives: Vec<String>,
     pub status: String,
+    /// 0-based index of the topic the tutor is on.
+    pub topic_idx: i64,
 }
 
 pub fn lesson_from_row(r: &rusqlite::Row) -> rusqlite::Result<Lesson> {
@@ -393,10 +397,12 @@ pub fn lesson_from_row(r: &rusqlite::Row) -> rusqlite::Result<Lesson> {
         objectives: serde_json::from_str(&obj).unwrap_or_default(),
         title: r.get(8)?,
         status: r.get(9)?,
+        topic_idx: r.get(10)?,
     })
 }
 
-pub const LESSON_COLS: &str = "id, curriculum_id, ord, phase_idx, module_idx, phase, module, objectives, title, status";
+pub const LESSON_COLS: &str =
+    "id, curriculum_id, ord, phase_idx, module_idx, phase, module, objectives, title, status, topic_idx";
 
 pub fn get_lesson(conn: &Connection, id: i64) -> Result<Lesson> {
     Ok(conn.query_row(&format!("SELECT {LESSON_COLS} FROM lessons WHERE id = ?1"), [id], lesson_from_row)?)
@@ -409,11 +415,13 @@ pub struct Message {
     pub content: String,
     pub sources: Vec<Source>,
     pub created_at: String,
+    /// For tutor replies: the 0-based topic this reply teaches.
+    pub topic_idx: Option<i64>,
 }
 
 pub fn messages(conn: &Connection, lesson_id: i64) -> Result<Vec<Message>> {
     let mut stmt = conn.prepare(
-        "SELECT id, role, content, sources, created_at FROM messages WHERE lesson_id = ?1 ORDER BY id",
+        "SELECT id, role, content, sources, created_at, topic_idx FROM messages WHERE lesson_id = ?1 ORDER BY id",
     )?;
     let rows = stmt.query_map([lesson_id], |r| {
         let s: Option<String> = r.get(3)?;
@@ -423,6 +431,7 @@ pub fn messages(conn: &Connection, lesson_id: i64) -> Result<Vec<Message>> {
             content: r.get(2)?,
             sources: s.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default(),
             created_at: r.get(4)?,
+            topic_idx: r.get(5)?,
         })
     })?;
     Ok(rows.collect::<std::result::Result<_, _>>()?)
@@ -430,7 +439,7 @@ pub fn messages(conn: &Connection, lesson_id: i64) -> Result<Vec<Message>> {
 
 /// Stable per lesson, so Claude can cache it.
 pub fn lesson_system_prompt(track: &Track, lesson: &Lesson, placement: Option<&PlacementResult>) -> String {
-    let objectives = lesson.objectives.iter().map(|o| format!("- {o}")).collect::<Vec<_>>().join("\n");
+    let topics = lesson.objectives.iter().enumerate().map(|(i, o)| format!("{}. {o}", i + 1)).collect::<Vec<_>>().join("\n");
     let learner = match placement {
         Some(p) => format!(
             "Placement quiz: {}/{}. Strong: {}. Weak: {}.",
@@ -444,22 +453,48 @@ pub fn lesson_system_prompt(track: &Track, lesson: &Lesson, placement: Option<&P
     format!(
         "You are CPrep, a patient, rigorous tutor for a university student (graduating 2028) preparing for \
 software engineering internships and remote roles. Track: {track}.\n\n\
-Current lesson: \"{title}\" (phase \"{phase}\", module \"{module}\").\nObjectives:\n{objectives}\n\n\
+Current lesson: \"{title}\" (phase \"{phase}\", module \"{module}\").\nTopics, taught in this order:\n{topics}\n\n\
 Learner profile: {learner}\n\n\
 How to teach:\n\
-- Teach one idea at a time, from the ground up, with a concrete example (Python unless the lesson says otherwise).\n\
+- Teach the topics in order, one idea at a time, from the ground up, with a concrete example (Python unless the lesson says otherwise).\n\
+- Begin EVERY reply with a marker on its own first line giving the number of the topic that reply is about, exactly like: [[topic:2]]\n\
+- Move to the next topic only when the learner has shown they understand the current one. Each learner message \
+starts with a <lesson_state> note saying which topic they are on.\n\
 - Keep each reply under about 250 words. End with ONE check question or a tiny exercise, then wait.\n\
 - When the learner answers, say clearly whether it is right, fix misconceptions, then move on.\n\
 - Each learner message may include <sources> excerpts from their own study files, numbered [S1], [S2]... \
 Prefer them, and cite them inline like [S2] when you use them. If they don't cover something, teach from \
 general knowledge and don't invent citations.\n\
-- When all objectives are covered, summarise in 3 bullets and say the lesson can be marked complete.\n\
-- Use Markdown. Use fenced code blocks with a language tag.",
+- When every topic is covered, summarise in 3 bullets and say the lesson can be marked complete.\n\
+- Use Markdown. Use fenced code blocks with a language tag. Do not use emoji anywhere.",
         track = track.name,
         title = lesson.title,
         phase = lesson.phase,
         module = lesson.module,
     )
+}
+
+static TOPIC_RE: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"\[\[\s*topic\s*:\s*(\d+)\s*\]\]\s*").unwrap());
+
+/// Find the tutor's `[[topic:N]]` marker (1-based); return the 0-based topic and the reply without markers.
+pub fn parse_topic(reply: &str, topics: usize) -> (Option<i64>, String) {
+    let topic = TOPIC_RE
+        .captures(reply)
+        .and_then(|c| c[1].parse::<i64>().ok())
+        .filter(|_| topics > 0)
+        .map(|n| (n - 1).clamp(0, topics as i64 - 1));
+    (topic, TOPIC_RE.replace_all(reply, "").trim().to_string())
+}
+
+/// Tells the tutor where the learner is. Goes in the user turn so the system prompt stays cacheable.
+pub fn lesson_state(lesson: &Lesson) -> String {
+    let n = lesson.objectives.len();
+    if n == 0 {
+        return String::new();
+    }
+    let i = (lesson.topic_idx.max(0) as usize).min(n - 1);
+    format!("<lesson_state>Topic {} of {n}: {}</lesson_state>\n", i + 1, lesson.objectives[i])
 }
 
 pub fn format_sources(sources: &[Source]) -> String {
@@ -480,7 +515,7 @@ pub fn format_sources(sources: &[Source]) -> String {
 pub enum ChatEvent {
     Sources { sources: Vec<Source> },
     Delta { text: String },
-    Done { message_id: i64, provider: String, cost_usd: f64 },
+    Done { message_id: i64, provider: String, cost_usd: f64, topic_idx: i64 },
     Error { message: String },
 }
 
@@ -519,7 +554,7 @@ pub async fn chat_turn(
 
     let shown = if is_start { "" } else { user_text };
     let asked = if is_start { START_PROMPT } else { user_text };
-    let llm_user = format!("{}{}", format_sources(&sources), asked);
+    let llm_user = format!("{}{}{}", lesson_state(&lesson), format_sources(&sources), asked);
 
     // Claude gets the exact history (cache-friendly). Small local models get a trimmed window
     // where older turns drop their source excerpts, to fit an 8K context.
@@ -542,10 +577,12 @@ pub async fn chat_turn(
     let (reply, usage) = provider
         .stream_chat(&system, &msgs, |t| emit(ChatEvent::Delta { text: t.to_string() }))
         .await?;
-    let reply = reply.trim().to_string();
+    let raw_reply = reply.trim().to_string();
+    let (topic, reply) = parse_topic(&raw_reply, lesson.objectives.len());
     if reply.is_empty() {
         bail!("The tutor returned an empty reply. Try again.");
     }
+    let topic_idx = topic.unwrap_or(lesson.topic_idx);
 
     let conn = db.lock().unwrap();
     let tx = conn.unchecked_transaction()?;
@@ -554,14 +591,17 @@ pub async fn chat_turn(
         params![lesson_id, shown, llm_user, db::now()],
     )?;
     tx.execute(
-        "INSERT INTO messages (lesson_id, role, content, llm_content, sources, created_at) VALUES (?1, 'assistant', ?2, ?2, ?3, ?4)",
-        params![lesson_id, reply, serde_json::to_string(&sources)?, db::now()],
+        "INSERT INTO messages (lesson_id, role, content, llm_content, sources, created_at, topic_idx)
+         VALUES (?1, 'assistant', ?2, ?3, ?4, ?5, ?6)",
+        params![lesson_id, reply, raw_reply, serde_json::to_string(&sources)?, db::now(), topic_idx],
     )?;
     let mid = tx.last_insert_rowid();
+    // Progress only moves forward; revisiting an earlier topic doesn't undo it.
+    tx.execute("UPDATE lessons SET topic_idx = MAX(topic_idx, ?1) WHERE id = ?2", params![topic_idx, lesson_id])?;
     tx.execute("UPDATE lessons SET status = 'in_progress' WHERE id = ?1 AND status IN ('todo','skipped')", [lesson_id])?;
     db::record_usage(&tx, &usage)?;
     tx.commit()?;
-    emit(ChatEvent::Done { message_id: mid, provider: provider.label_for(&usage), cost_usd: usage.cost_usd() });
+    emit(ChatEvent::Done { message_id: mid, provider: provider.label_for(&usage), cost_usd: usage.cost_usd(), topic_idx });
     Ok(mid)
 }
 
@@ -653,6 +693,15 @@ mod tests {
         ]}));
         assert_eq!(qs.len(), 1);
         assert_eq!(qs[0].options[0], "a");
+    }
+
+    #[test]
+    fn topic_marker_is_parsed_and_stripped() {
+        let (t, text) = parse_topic("[[topic:2]]\nLoops repeat work.", 4);
+        assert_eq!(t, Some(1));
+        assert_eq!(text, "Loops repeat work.");
+        assert_eq!(parse_topic("[[ topic: 9 ]] x", 3).0, Some(2), "clamped to the last topic");
+        assert_eq!(parse_topic("no marker", 3).0, None);
     }
 
     #[test]

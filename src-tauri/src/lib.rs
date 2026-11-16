@@ -407,7 +407,7 @@ fn set_lesson_status(state: State<'_, AppState>, lesson_id: i64, status: String)
 fn retake_lesson(state: State<'_, AppState>, lesson_id: i64) -> CmdResult<()> {
     let conn = state.db.lock().unwrap();
     conn.execute("DELETE FROM messages WHERE lesson_id = ?1", [lesson_id]).map_err(err)?;
-    conn.execute("UPDATE lessons SET status = 'todo' WHERE id = ?1", [lesson_id]).map_err(err)?;
+    conn.execute("UPDATE lessons SET status = 'todo', topic_idx = 0 WHERE id = ?1", [lesson_id]).map_err(err)?;
     Ok(())
 }
 

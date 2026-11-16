@@ -97,6 +97,11 @@ async fn full_flow_on_real_folder() {
     println!("LESSON 2 turns in {:.0?}", t0.elapsed());
     println!("--- tutor opening ---\n{}\n---", msgs[1].content);
     assert_eq!(msgs.len(), 4);
+    let lesson = tutor::get_lesson(&db.lock().unwrap(), lesson_id).unwrap();
+    println!("TOPICS {:?}", lesson.objectives);
+    println!("TOPIC MARKERS: reply1={:?} reply2={:?} lesson.topic_idx={}", msgs[1].topic_idx, msgs[3].topic_idx, lesson.topic_idx);
+    assert!(msgs[1].topic_idx.is_some(), "tutor should tag replies with a topic");
+    assert!(!msgs[1].content.contains("[[topic"), "markers must be stripped from what the learner sees");
     assert!(!msgs[1].sources.is_empty(), "lesson should retrieve from the learner's files");
 
     drop(db);

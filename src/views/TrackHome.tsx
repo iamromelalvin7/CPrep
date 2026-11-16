@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import Markdown from "react-markdown";
+import { MdIcon, remarkEmojiIcons } from "../icons";
+
+const mdPlugins = [remarkEmojiIcons];
+const mdComponents = { i: MdIcon as never };
 import {
   api,
   IngestProgress,
@@ -286,7 +290,7 @@ function Placement({ trackId, detail, reload }: { trackId: string; detail: Track
             exit={{ opacity: 0 }}
             transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
           >
-            <div className="quiz-prompt"><Markdown>{q.prompt}</Markdown></div>
+            <div className="quiz-prompt"><Markdown remarkPlugins={mdPlugins} components={mdComponents}>{q.prompt}</Markdown></div>
             <div className="options" role="group" aria-label="Answers">
               {q.options.map((o, i) => (
                 <button
@@ -295,7 +299,7 @@ function Placement({ trackId, detail, reload }: { trackId: string; detail: Track
                   aria-pressed={answers[index] === i}
                   onClick={() => setAnswers((a) => a.map((x, j) => (j === index ? i : x)))}
                 >
-                  <Markdown>{o}</Markdown>
+                  <Markdown remarkPlugins={mdPlugins} components={mdComponents}>{o}</Markdown>
                 </button>
               ))}
             </div>
@@ -389,7 +393,7 @@ function QuizReview({ result }: { result: PlacementResult }) {
         <div className="quiz">
           {result.review.map((r, i) => (
             <div key={i} style={{ marginBottom: 22 }}>
-              <div className="quiz-prompt" style={{ fontSize: "1.1rem", margin: "6px 0 10px" }}><Markdown>{r.prompt}</Markdown></div>
+              <div className="quiz-prompt" style={{ fontSize: "1.1rem", margin: "6px 0 10px" }}><Markdown remarkPlugins={mdPlugins} components={mdComponents}>{r.prompt}</Markdown></div>
               <div className="options">
                 {r.options.map((o, j) => (
                   <div
@@ -397,7 +401,7 @@ function QuizReview({ result }: { result: PlacementResult }) {
                     className="option"
                     data-verdict={j === r.answer ? "right" : j === r.chosen ? "wrong" : undefined}
                   >
-                    <Markdown>{o}</Markdown>
+                    <Markdown remarkPlugins={mdPlugins} components={mdComponents}>{o}</Markdown>
                   </div>
                 ))}
               </div>

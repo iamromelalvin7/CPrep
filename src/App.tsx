@@ -1,31 +1,56 @@
 import { useCallback, useEffect, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { api, Settings as SettingsT, TrackSummary } from "./api";
+import { Icon } from "./icons";
 import TrackHome from "./views/TrackHome";
 import LessonView from "./views/Lesson";
 import SettingsView from "./views/Settings";
+import CourseNav, { LessonProgress } from "./views/CourseNav";
 
 export type Route =
   | { kind: "track"; trackId: string }
   | { kind: "lesson"; trackId: string; lessonId: number }
   | { kind: "settings" };
 
+const SIDEBAR_KEY = "cprep.sidebar";
+
+function readCollapsed() {
+  try {
+    return localStorage.getItem(SIDEBAR_KEY) === "collapsed";
+  } catch {
+    return false;
+  }
+}
+
 export default function App() {
   const [tracks, setTracks] = useState<TrackSummary[]>([]);
   const [settings, setSettings] = useState<SettingsT | null>(null);
   const [route, setRoute] = useState<Route>({ kind: "track", trackId: "backend" });
   const [menuOpen, setMenuOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(readCollapsed);
+  const [progress, setProgress] = useState<LessonProgress | null>(null);
+  const [navKey, setNavKey] = useState(0);
   const reduce = useReducedMotion();
 
   const refresh = useCallback(async () => {
     const [t, s] = await Promise.all([api.listTracks(), api.getSettings()]);
     setTracks(t);
     setSettings(s);
+    setNavKey((k) => k + 1);
   }, []);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  const toggleCollapsed = (value: boolean) => {
+    setCollapsed(value);
+    try {
+      localStorage.setItem(SIDEBAR_KEY, value ? "collapsed" : "open");
+    } catch {
+      /* storage unavailable: keep it for this session only */
+    }
+  };
 
   const go = (r: Route) => {
     setRoute(r);
@@ -36,46 +61,75 @@ export default function App() {
   const key = route.kind === "lesson" ? `l${route.lessonId}` : route.kind === "track" ? `t${route.trackId}` : "s";
 
   return (
-    <div className="shell">
+    <div className="shell" data-collapsed={collapsed}>
       <header className="topbar">
-        <button className="btn btn-quiet menu-btn" aria-label="Open tracks" onClick={() => setMenuOpen(true)}>
-          <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
-            <path d="M2 4h14M2 9h14M2 14h14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-          </svg>
+        <button className="btn btn-quiet menu-btn" aria-label="Open navigation" onClick={() => setMenuOpen(true)}>
+          <Icon name="sidebar" size={18} />
         </button>
         <div className="brand">CPrep</div>
       </header>
 
-      <nav className="sidebar" data-open={menuOpen} aria-label="Tracks" onClick={(e) => e.target === e.currentTarget && setMenuOpen(false)}>
-        <div className="brand">
-          CPrep
-          <small>Career prep, from your own notes</small>
+      {collapsed && (
+        <div className="rail">
+          <button className="icon-btn" aria-label="Show sidebar" title="Show sidebar" onClick={() => toggleCollapsed(false)}>
+            <Icon name="sidebar" size={18} />
+          </button>
         </div>
-        <ul className="track-list">
-          {tracks.map((t) => {
-            const active = route.kind !== "settings" && route.trackId === t.id;
-            return (
-              <li key={t.id}>
-                <button
-                  className="track-link"
-                  aria-current={active ? "page" : undefined}
-                  data-paused={t.status === "paused"}
-                  onClick={() => go({ kind: "track", trackId: t.id })}
-                >
-                  <span className="track-dot" style={{ background: t.accent }} />
-                  <span>{t.name}</span>
-                  <span className="track-count">
-                    {t.status === "paused" ? "paused" : t.lessons_total ? `${t.lessons_done}/${t.lessons_total}` : ""}
-                  </span>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
+      )}
+
+      <nav
+        className="sidebar"
+        data-open={menuOpen}
+        aria-label="Navigation"
+        onClick={(e) => e.target === e.currentTarget && setMenuOpen(false)}
+      >
+        <div className="sidebar-head">
+          <div className="brand">
+            CPrep
+            <small>Learn from your own notes</small>
+          </div>
+          <button className="icon-btn collapse-btn" aria-label="Hide sidebar" title="Hide sidebar" onClick={() => toggleCollapsed(true)}>
+            <Icon name="sidebar" size={18} />
+          </button>
+        </div>
+
+        {route.kind === "lesson" && current ? (
+          <CourseNav
+            track={current}
+            lessonId={route.lessonId}
+            progress={progress}
+            refreshKey={navKey}
+            onOpenLesson={(id) => go({ kind: "lesson", trackId: current.id, lessonId: id })}
+            onBack={() => go({ kind: "track", trackId: current.id })}
+          />
+        ) : (
+          <ul className="track-list">
+            {tracks.map((t) => {
+              const active = route.kind !== "settings" && route.trackId === t.id;
+              return (
+                <li key={t.id}>
+                  <button
+                    className="track-link"
+                    aria-current={active ? "page" : undefined}
+                    data-paused={t.status === "paused"}
+                    onClick={() => go({ kind: "track", trackId: t.id })}
+                  >
+                    <span className="track-dot" style={{ background: t.accent }} />
+                    <span>{t.name}</span>
+                    <span className="track-count">
+                      {t.status === "paused" ? "paused" : t.lessons_total ? `${t.lessons_done}/${t.lessons_total}` : ""}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+
         <div className="sidebar-foot">
           <div className="mode-pill" data-live={settings?.live ?? false}>
             <span className="lamp" />
-            {settings?.live ? `Live · ${settings.tutor_model}` : "Test mode · free models"}
+            {settings?.live ? `Live · ${settings.tutor_model}` : `Test mode · ${settings?.test_provider === "local" ? "local model" : settings?.test_provider ?? "free"}`}
           </div>
           <button
             className="track-link"
@@ -111,6 +165,7 @@ export default function App() {
                 onBack={() => go({ kind: "track", trackId: current.id })}
                 onOpenLesson={(id) => go({ kind: "lesson", trackId: current.id, lessonId: id })}
                 onChanged={refresh}
+                onProgress={setProgress}
               />
             )}
           </motion.div>
