@@ -15,6 +15,8 @@ pub struct Config {
     pub escalate_model: String,
     /// "local" (Ollama) or "gemini": which free provider test mode uses.
     pub test_provider: String,
+    /// Groq model for requests with an image (canvas feedback).
+    pub groq_vision_model: String,
     pub env_path: Option<PathBuf>,
 }
 
@@ -62,6 +64,7 @@ impl Config {
             curriculum_model: var("CURRICULUM_MODEL").unwrap_or_else(|| "claude-sonnet-5-5".into()),
             escalate_model: var("ESCALATE_MODEL").unwrap_or_else(|| "claude-opus-5-5".into()),
             test_provider: var("TEST_PROVIDER").unwrap_or_else(|| "local".into()),
+            groq_vision_model: var("GROQ_VISION_MODEL").unwrap_or_else(|| crate::llm::DEFAULT_GROQ_VISION_MODEL.into()),
             env_path,
         }
     }

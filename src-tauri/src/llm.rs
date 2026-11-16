@@ -97,8 +97,12 @@ impl Usage {
 pub enum Provider {
     Claude { key: String, model: String },
     Ollama { host: String, model: String },
-    OpenAiCompat { name: &'static str, base: &'static str, key: String, model: String },
+    /// `vision`: whether this model accepts images.
+    OpenAiCompat { name: &'static str, base: &'static str, key: String, model: String, vision: bool },
 }
+
+/// Groq model used when a request carries an image (canvas feedback). Override with GROQ_VISION_MODEL.
+pub const DEFAULT_GROQ_VISION_MODEL: &str = "qwen/qwen3.8-27b";
 
 /// What a request is for. Routing differs per task in live mode.
 #[derive(Clone, Copy, Debug)]
@@ -107,6 +111,8 @@ pub enum Task {
     Curriculum,
     Quiz,
     Escalate,
+    /// Reviewing a drawing: prefers a model that can see the canvas image.
+    Vision,
 }
 
 /// Pick a provider. `live == false` is test mode: never spends Claude credit.
@@ -117,7 +123,7 @@ pub fn route(cfg: &Config, live: bool, task: Task) -> Result<Provider> {
             .clone()
             .ok_or_else(|| anyhow!("Live mode needs ANTHROPIC_API_KEY in your .env file."))?;
         let model = match task {
-            Task::Tutor | Task::Quiz => cfg.tutor_model.clone(),
+            Task::Tutor | Task::Quiz | Task::Vision => cfg.tutor_model.clone(),
             Task::Curriculum => cfg.curriculum_model.clone(),
             Task::Escalate => cfg.escalate_model.clone(),
         };
@@ -134,6 +140,7 @@ pub fn route(cfg: &Config, live: bool, task: Task) -> Result<Provider> {
                 base: GEMINI_BASE,
                 key,
                 model: std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-3.8-flash".into()),
+                vision: true,
             })
         }
         "groq" => {
@@ -141,12 +148,11 @@ pub fn route(cfg: &Config, live: bool, task: Task) -> Result<Provider> {
                 .groq_key
                 .clone()
                 .ok_or_else(|| anyhow!("TEST_PROVIDER=groq needs GROQ_API_KEY in .env."))?;
-            Ok(Provider::OpenAiCompat {
-                name: "groq",
-                base: GROQ_BASE,
-                key,
-                model: std::env::var("GROQ_MODEL").unwrap_or_else(|_| "openai/gpt-oss-120b".into()),
-            })
+            let (model, vision) = match task {
+                Task::Vision => (cfg.groq_vision_model.clone(), true),
+                _ => (std::env::var("GROQ_MODEL").unwrap_or_else(|_| "openai/gpt-oss-120b".into()), false),
+            };
+            Ok(Provider::OpenAiCompat { name: "groq", base: GROQ_BASE, key, model, vision })
         }
         _ => Ok(Provider::Ollama { host: cfg.ollama_host.clone(), model: cfg.ollama_chat_model.clone() }),
     }
@@ -227,7 +233,7 @@ impl Provider {
     pub fn sees_images(&self) -> bool {
         match self {
             Provider::Claude { .. } => true,
-            Provider::OpenAiCompat { name, .. } => *name == "gemini",
+            Provider::OpenAiCompat { vision, .. } => *vision,
             Provider::Ollama { .. } => false,
         }
     }
@@ -299,7 +305,7 @@ impl Provider {
                 };
                 Ok((extract_json(text)?, usage))
             }
-            Provider::OpenAiCompat { name, base, key, model } => {
+            Provider::OpenAiCompat { name, base, key, model, .. } => {
                 let messages = json!([
                     {"role": "system", "content": system},
                     {"role": "user", "content": user}
@@ -459,7 +465,7 @@ Reply with only a JSON object matching this JSON Schema:
                 }
                 Ok((strip_think(&full), usage))
             }
-            Provider::OpenAiCompat { name, base, key, model } => {
+            Provider::OpenAiCompat { name, base, key, model, .. } => {
                 let mut msgs = vec![json!({"role": "system", "content": system})];
                 msgs.extend(messages.iter().map(ChatMsg::openai));
                 let body = json!({"model": model, "stream": true, "messages": msgs});
@@ -599,6 +605,19 @@ mod tests {
         assert_eq!(parse_try_again("try again in 1m2.5s"), Some(62.5));
         assert_eq!(parse_try_again("try again in 250ms"), Some(0.25));
         assert_eq!(parse_try_again("nothing here"), None);
+    }
+
+    #[test]
+    fn vision_routing() {
+        let mut cfg = Config::load();
+        cfg.test_provider = "groq".into();
+        cfg.groq_key = Some("test".into());
+        cfg.groq_vision_model = "some/vision-model".into();
+        let v = route(&cfg, false, Task::Vision).unwrap();
+        assert!(v.sees_images());
+        assert!(v.label().ends_with("some/vision-model"));
+        let t = route(&cfg, false, Task::Tutor).unwrap();
+        assert!(!t.sees_images(), "the text model stays text-only");
     }
 
     #[test]

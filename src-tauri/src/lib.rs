@@ -108,6 +108,7 @@ struct Settings {
     ollama_embed_model: String,
     ollama_up: bool,
     notes_dir: String,
+    vision_model: String,
     ollama_models: Vec<String>,
     spend_usd: f64,
 }
@@ -136,6 +137,9 @@ async fn get_settings(state: State<'_, AppState>) -> CmdResult<Settings> {
         ollama_embed_model: cfg.ollama_embed_model.clone(),
         ollama_up: models.is_ok(),
         notes_dir: lab::notes_dir().to_string_lossy().to_string(),
+        vision_model: llm::route(cfg, state.live.load(Ordering::Relaxed), Task::Vision)
+            .map(|p| p.label())
+            .unwrap_or_else(|_| "not available".into()),
         ollama_models: models.unwrap_or_default(),
         spend_usd: spend,
     })
@@ -621,21 +625,36 @@ async fn critique_canvas(
         let conn = state.db.lock().unwrap();
         (tutor::get_lesson(&conn, lesson_id).map_err(err)?, canvas::load(&conn, lesson_id).map_err(err)?)
     };
-    let provider = llm::route(&state.cfg, state.live.load(Ordering::Relaxed), Task::Tutor).map_err(err)?;
+    let live = state.live.load(Ordering::Relaxed);
+    let provider = llm::route(&state.cfg, live, Task::Vision).map_err(err)?;
     let image = image_png.filter(|_| provider.sees_images());
     let (system, user) = canvas::critique_prompt(t, &lesson, saved.task.as_deref(), &description, image.is_some());
-    let msg = llm::ChatMsg { role: "user".into(), content: user, image_png: image };
-    let result = provider
-        .stream_chat(&system, &[msg], |d| {
+    let mut sent_any = false;
+    let mut result = provider
+        .stream_chat(&system, &[llm::ChatMsg { role: "user".into(), content: user, image_png: image.clone() }], |d| {
+            sent_any = true;
             let _ = on_event.send(LabEvent::Delta { text: d.to_string() });
         })
-        .await;
+        .await
+        .map(|(text, usage)| (text, usage, provider.clone()));
+    // If the vision model fails before saying anything (retired, overloaded, rejects the image),
+    // fall back to the text model with the structural description only.
+    if result.is_err() && image.is_some() && !sent_any {
+        let fallback = llm::route(&state.cfg, live, Task::Tutor).map_err(err)?;
+        let (system, user) = canvas::critique_prompt(t, &lesson, saved.task.as_deref(), &description, false);
+        result = fallback
+            .stream_chat(&system, &[llm::ChatMsg::text("user", user)], |d| {
+                let _ = on_event.send(LabEvent::Delta { text: d.to_string() });
+            })
+            .await
+            .map(|(text, usage)| (text, usage, fallback.clone()));
+    }
     match result {
-        Ok((critique, usage)) => {
+        Ok((critique, usage, used)) => {
             let conn = state.db.lock().unwrap();
             db::record_usage(&conn, &usage).map_err(err)?;
             canvas::save_critique(&conn, lesson_id, critique.trim()).map_err(err)?;
-            let _ = on_event.send(LabEvent::Done { attempt_id: 0, provider: provider.label_for(&usage), cost_usd: usage.cost_usd() });
+            let _ = on_event.send(LabEvent::Done { attempt_id: 0, provider: used.label_for(&usage), cost_usd: usage.cost_usd() });
             Ok(())
         }
         Err(e) => {

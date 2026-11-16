@@ -67,6 +67,17 @@ export default function SettingsView({ settings, onChange }: { settings: Setting
         </div>
 
         <div className="setting">
+          <dt>Canvas feedback</dt>
+          <dd>
+            <span className="code-inline">{s.vision_model}</span>{" "}
+            <span className="faint">
+              (a model that can see your drawing; change it with GROQ_VISION_MODEL in .env. If it fails, feedback falls back to
+              reading your shapes and arrows as text.)
+            </span>
+          </dd>
+        </div>
+
+        <div className="setting">
           <dt>Test-mode provider</dt>
           <dd>
             <span className="code-inline">{s.test_provider}</span>{" "}

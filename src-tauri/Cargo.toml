@@ -43,3 +43,6 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+[dev-dependencies]
+base64 = "0.23.1"

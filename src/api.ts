@@ -29,6 +29,7 @@ export type Settings = {
   ollama_embed_model: string;
   ollama_up: boolean;
   notes_dir: string;
+  vision_model: string;
   ollama_models: string[];
   spend_usd: number;
 };
@@ -352,6 +353,7 @@ async function mock<T>(cmd: string, args: Record<string, unknown>): Promise<T> {
       ollama_embed_model: "nomic-embed-text",
       ollama_up: true,
       notes_dir: "C:\\Users\\you\\Documents\\CPrep Notes",
+      vision_model: "groq · qwen/qwen3.8-27b",
       ollama_models: ["gemma2:9b", "nomic-embed-text:latest"],
       spend_usd: 0,
     } satisfies Settings,

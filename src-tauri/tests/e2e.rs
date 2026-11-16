@@ -247,3 +247,28 @@ async fn canvas_flow() {
     println!("CRITIQUE in {:.0?}:\n{review}", t0.elapsed());
     assert!(review.to_lowercase().contains("cache"), "critique should notice the missing cache");
 }
+
+/// Canvas feedback with an image on the configured test provider's vision model.
+/// The fixture shows Browser → API → Redis plus a stray red circle that only an image reveals.
+/// Run with: cargo test --test e2e canvas_vision -- --ignored --nocapture
+#[tokio::test]
+#[ignore]
+async fn canvas_vision() {
+    use base64::Engine;
+    let cfg = Config::load();
+    let provider = llm::route(&cfg, false, llm::Task::Vision).unwrap();
+    println!("PROVIDER {} (sees images: {})", provider.label(), provider.sees_images());
+    assert!(provider.sees_images(), "canvas feedback should use a vision model");
+    let png = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/diagram.png")).unwrap();
+    let img = base64::engine::general_purpose::STANDARD.encode(png);
+    let msg = llm::ChatMsg {
+        role: "user".into(),
+        content: "Describe this diagram in two sentences: name every box, the arrow directions, and any other mark.".into(),
+        image_png: Some(img),
+    };
+    let t0 = Instant::now();
+    let (text, _) = provider.stream_chat("You describe diagrams precisely.", &[msg], |_| {}).await.unwrap();
+    println!("VISION in {:.0?}: {text}", t0.elapsed());
+    let lower = text.to_lowercase();
+    assert!(lower.contains("redis") && lower.contains("api"), "should read the box labels from the image");
+}
