@@ -231,6 +231,23 @@ pub fn init(conn: &Connection) -> Result<()> {
             rating INTEGER NOT NULL,
             reviewed_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS interviews (
+            id INTEGER PRIMARY KEY,
+            kind TEXT NOT NULL,
+            track_id TEXT,
+            minutes INTEGER NOT NULL,
+            started_at TEXT NOT NULL,
+            ended_at TEXT,
+            debrief TEXT
+        );
+        CREATE TABLE IF NOT EXISTS interview_messages (
+            id INTEGER PRIMARY KEY,
+            interview_id INTEGER NOT NULL REFERENCES interviews(id) ON DELETE CASCADE,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            code TEXT,
+            created_at TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL

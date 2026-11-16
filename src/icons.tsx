@@ -23,6 +23,10 @@ type IconName =
   | "notes"
   | "canvas"
   | "calendar"
+  | "mic"
+  | "speaker"
+  | "stop"
+  | "interview"
   | "cards"
   | "spark";
 
@@ -96,6 +100,26 @@ const paths: Record<IconName, ReactElement> = {
     <>
       <rect x="2" y="2.5" width="12" height="9" rx="1.4" />
       <path d="M5 14l3-2.5 3 2.5M5 8.5l2-2 1.6 1.6L11 5.5" />
+    </>
+  ),
+  mic: (
+    <>
+      <rect x="6" y="2" width="4" height="7.5" rx="2" />
+      <path d="M3.8 7.5a4.2 4.2 0 0 0 8.4 0M8 11.7V14M5.8 14h4.4" />
+    </>
+  ),
+  speaker: (
+    <>
+      <path d="M2.5 6h2.5l3.5-3v10l-3.5-3H2.5z" />
+      <path d="M10.8 5.6a3.4 3.4 0 0 1 0 4.8M12.6 3.8a6 6 0 0 1 0 8.4" />
+    </>
+  ),
+  stop: <rect x="4" y="4" width="8" height="8" rx="1.2" />,
+  interview: (
+    <>
+      <circle cx="5.5" cy="5.5" r="2" />
+      <circle cx="11" cy="5.5" r="2" />
+      <path d="M2 13c.4-2.2 1.8-3.4 3.5-3.4S8.6 10.8 9 13M8.2 10.6c.6-.6 1.6-1 2.8-1 1.7 0 3 1.2 3.4 3.4" />
     </>
   ),
   calendar: (

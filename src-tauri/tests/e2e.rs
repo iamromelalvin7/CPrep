@@ -317,3 +317,62 @@ async fn cards_flow() {
     // Generating again must not duplicate the same questions.
     drop(conn);
 }
+
+/// Voice round trip: Kokoro speaks a sentence, Groq Whisper transcribes it back.
+/// Run with: cargo test --test e2e voice_round_trip -- --ignored --nocapture
+#[tokio::test]
+#[ignore]
+async fn voice_round_trip() {
+    let cfg = Config::load();
+    let script = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sidecar/kokoro_server.py");
+    let tts = cprep_lib::voice::Tts::new(cprep_lib::voice::default_python(), script);
+    let t0 = Instant::now();
+    tts.warm_up().await.unwrap();
+    println!("KOKORO started in {:.0?}", t0.elapsed());
+    let sentence = "A hash map gives average constant time lookups, which is why we use it for two sum.";
+    let t0 = Instant::now();
+    let s = tts.speak(sentence, "af_heart", 1.0).await.unwrap();
+    println!("SPEAK {:.1}s of audio in {:.0?} (model {} ms)", s.seconds, t0.elapsed(), s.ms);
+    let t0 = Instant::now();
+    let s2 = tts.speak("Second sentence, while the process stays warm.", "af_heart", 1.1).await.unwrap();
+    println!("SPEAK warm: {:.1}s of audio in {:.0?}", s2.seconds, t0.elapsed());
+    let t0 = Instant::now();
+    let heard = cprep_lib::voice::transcribe(&cfg, &s.wav_b64, "audio/wav").await.unwrap();
+    println!("HEARD in {:.0?}: {heard}", t0.elapsed());
+    let lower = heard.to_lowercase().replace('-', " ");
+    assert!(lower.contains("hash map") && lower.contains("two sum"), "transcript should match the sentence");
+}
+
+/// A short mock interview on the test provider: start, one answer, debrief.
+/// Run with: cargo test --test e2e interview_flow -- --ignored --nocapture
+#[tokio::test]
+#[ignore]
+async fn interview_flow() {
+    use cprep_lib::interview;
+    let cfg = Config::load();
+    let db = Mutex::new(rusqlite::Connection::open_in_memory().unwrap());
+    db::init(&db.lock().unwrap()).unwrap();
+    let id = interview::create(&db.lock().unwrap(), interview::Kind::Technical, Some("backend"), 15).unwrap();
+    let provider = llm::route(&cfg, false, llm::Task::Tutor).unwrap();
+    let system = interview::system_prompt(interview::Kind::Technical, db::track("backend"), 15, &[]);
+    let mut q = String::new();
+    for answer in ["", "GET reads a resource and should be safe and idempotent; POST creates something and isn't idempotent, so retrying a POST can create duplicates."] {
+        let msgs = {
+            let conn = db.lock().unwrap();
+            let iv = interview::get(&conn, id).unwrap();
+            interview::prepare_turn(&conn, &iv, answer, None).unwrap()
+        };
+        let t0 = Instant::now();
+        let (reply, _) = provider.stream_chat(&system, &msgs, |_| {}).await.unwrap();
+        println!("INTERVIEWER ({:.0?}): {reply}\n", t0.elapsed());
+        interview::save_reply(&db.lock().unwrap(), id, reply.trim()).unwrap();
+        q = reply;
+    }
+    assert!(!q.trim().is_empty());
+    let deb_provider = llm::route(&cfg, false, llm::Task::Curriculum).unwrap();
+    let t0 = Instant::now();
+    let (v, _) = interview::debrief(&db, &deb_provider, id).await.unwrap();
+    println!("DEBRIEF ({:.0?}): {}", t0.elapsed(), serde_json::to_string_pretty(&v).unwrap());
+    assert!((1..=5).contains(&v["overall"].as_i64().unwrap()));
+    assert!(interview::get(&db.lock().unwrap(), id).unwrap().ended_at.is_some());
+}

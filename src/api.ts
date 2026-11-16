@@ -163,6 +163,37 @@ export type ReviewSummary = {
 };
 export type LessonCards = { lesson_id: number; title: string; track_id: string; cards: number; status: string };
 
+export type VoiceStatus = {
+  python: string;
+  python_found: boolean;
+  script_found: boolean;
+  running: boolean;
+  stt_ready: boolean;
+  voices: [string, string][];
+};
+export type Speech = { wav_b64: string; seconds: number; ms: number };
+export type InterviewKind = "behavioral" | "technical" | "dsa" | "system_design";
+export type Debrief = {
+  overall: number;
+  verdict: string;
+  summary: string;
+  scores: { skill: string; score: number; note: string }[];
+  strengths: string[];
+  improvements: string[];
+  better_answer: { question: string; answer: string };
+};
+export type Interview = {
+  id: number;
+  kind: InterviewKind;
+  track_id: string | null;
+  minutes: number;
+  started_at: string;
+  ended_at: string | null;
+  debrief: Debrief | null;
+};
+export type InterviewTurn = { id: number; role: "user" | "assistant"; content: string; code: string | null; created_at: string };
+export type InterviewView = { interview: Interview; turns: InterviewTurn[] };
+
 export const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -232,6 +263,21 @@ export const api = {
   rateCard: (cardId: number, rating: 1 | 2 | 3 | 4) => call<string>("rate_card", { cardId, rating }),
   makeCards: (lessonId: number) => call<number>("make_cards", { lessonId }),
   lessonsForCards: () => call<LessonCards[]>("lessons_for_cards"),
+  voiceStatus: () => call<VoiceStatus>("voice_status"),
+  voiceWarmUp: () => call<void>("voice_warm_up"),
+  speak: (text: string, voice: string, speed: number) => call<Speech>("speak", { text, voice, speed }),
+  transcribe: (audioB64: string, mime: string) => call<string>("transcribe", { audioB64, mime }),
+  startInterview: (kind: InterviewKind, trackId: string | null, minutes: number) =>
+    call<number>("start_interview", { kind, trackId, minutes }),
+  getInterview: (id: number) => call<InterviewView>("get_interview", { id }),
+  listInterviews: () => call<Interview[]>("list_interviews"),
+  interviewTurn: async (id: number, text: string, code: string | null, onEvent: (e: LabEvent) => void) => {
+    if (!inTauri) return mockInterviewTurn(id, text, code, onEvent);
+    const ch = new Channel<LabEvent>();
+    ch.onmessage = onEvent;
+    await tauriInvoke("interview_turn", { id, text, code, onEvent: ch });
+  },
+  endInterview: (id: number) => call<Debrief>("end_interview", { id }),
   pickFolder: async (): Promise<string | null> => {
     if (!inTauri) return "C:\\Users\\you\\Desktop\\programming\\BACKEND JOURNEY";
     const { open } = await import("@tauri-apps/plugin-dialog");
@@ -380,6 +426,22 @@ let mockMessages: Message[] = [
 
 async function mock<T>(cmd: string, args: Record<string, unknown>): Promise<T> {
   await new Promise((r) => setTimeout(r, 120));
+  if (cmd === "start_interview") {
+    const iv: Interview = { id: mockInterviews.length + 1, kind: args.kind as InterviewKind, track_id: (args.trackId as string) ?? null, minutes: Number(args.minutes), started_at: new Date().toISOString(), ended_at: null, debrief: null };
+    mockInterviews = [iv, ...mockInterviews];
+    mockTurns[iv.id] = [];
+    return iv.id as T;
+  }
+  if (cmd === "get_interview") {
+    const iv = mockInterviews.find((x) => x.id === args.id)!;
+    return { interview: iv, turns: mockTurns[iv.id] ?? [] } as T;
+  }
+  if (cmd === "end_interview") {
+    const iv = mockInterviews.find((x) => x.id === args.id)!;
+    iv.ended_at = new Date().toISOString();
+    iv.debrief = mockDebrief;
+    return mockDebrief as T;
+  }
   if (cmd === "add_session") {
     const n = args.session as NewSession;
     mockSessions = [...mockSessions, { ...n, id: mockSessions.length + 10, lesson_title: null }];
@@ -460,6 +522,11 @@ async function mock<T>(cmd: string, args: Record<string, unknown>): Promise<T> {
     write_notes: "C:\\Users\\you\\Documents\\CPrep Notes\\Backend Engineering\\06 Routes and views.md",
     notes_path: null,
     list_sessions: mockSessions,
+    voice_status: { python: "C:\\Users\\you\\kokoro-venv\\Scripts\\python.exe", python_found: true, script_found: true, running: false, stt_ready: true, voices: [["af_heart", "Heart (American, female)"], ["am_michael", "Michael (American, male)"], ["bf_emma", "Emma (British, female)"]] } satisfies VoiceStatus,
+    voice_warm_up: null,
+    speak: null,
+    transcribe: "I would use a hash map from value to index, so each lookup is constant time.",
+    list_interviews: mockInterviews,
     get_reminders: { offsets: [30, 15, 0], review_time: "19:00", keep_in_tray: true, autostart: false } satisfies ReminderSettings,
     save_reminders: null,
     test_notification: null,
@@ -579,6 +646,45 @@ let mockCards: Card[] = [
   { id: 1, track_id: "backend", lesson_id: 1, lesson_title: "Routes and URL rules", front: "What does Flask return when a route only allows `GET` and the client sends `POST`?", back: "`405 Method Not Allowed`. List both methods in `methods=[...]` and branch on `request.method` to accept both.", due: today.toISOString(), memory: { stability: 3.7, difficulty: 5, reps: 1, lapses: 0 }, last_review: null, preview: ["10m", "2d", "4d", "14d"] },
   { id: 2, track_id: "backend", lesson_id: 1, lesson_title: "Routes and URL rules", front: "Why does returning a `dict` from a Flask view produce JSON?", back: "Flask runs `jsonify` on dict and list return values, which serialises them and sets `Content-Type: application/json`.", due: today.toISOString(), memory: { stability: 0, difficulty: 0, reps: 0, lapses: 0 }, last_review: null, preview: ["10m", "1d", "4d", "14d"] },
 ];
+
+const mockDebrief: Debrief = {
+  overall: 3,
+  verdict: "Lean hire",
+  summary: "Clear on the core idea and communicated it well. Didn't get to edge cases or complexity before time ran out.",
+  scores: [
+    { skill: "Problem understanding", score: 4, note: "Asked whether the array could contain duplicates before starting." },
+    { skill: "Approach and algorithm", score: 4, note: "Went straight to the one-pass hash map instead of nested loops." },
+    { skill: "Code correctness", score: 3, note: "Correct for the example, but returned None silently when no pair exists." },
+    { skill: "Complexity analysis", score: 2, note: "Said O(n) time but didn't mention the O(n) extra space." },
+    { skill: "Communication", score: 4, note: "Thought out loud and explained each step." },
+  ],
+  strengths: ["Asked a clarifying question before coding.", "Chose the optimal approach first."],
+  improvements: ["State both time and space complexity every time.", "Say what your function returns when there is no answer.", "Dry-run your code on one edge case before saying you're done."],
+  better_answer: { question: "What's the complexity of your solution?", answer: "One pass over the array, so O(n) time. The dictionary holds at most n entries, so O(n) extra space. That's the trade: we spend memory to avoid the O(n²) nested loop." },
+};
+let mockInterviews: Interview[] = [
+  { id: 1, kind: "dsa", track_id: "dsa", minutes: 20, started_at: new Date(Date.now() - 86400000).toISOString(), ended_at: new Date(Date.now() - 86000000).toISOString(), debrief: mockDebrief },
+];
+const mockTurns: Record<number, InterviewTurn[]> = {
+  1: [
+    { id: 1, role: "user", content: "(The candidate has joined. Greet them in one sentence and ask your first question.)", code: null, created_at: "" },
+    { id: 2, role: "assistant", content: "Hi, thanks for joining. Given an array of integers and a target, return the indices of the two numbers that add up to the target.", code: null, created_at: "" },
+  ],
+};
+async function mockInterviewTurn(id: number, text: string, code: string | null, onEvent: (e: LabEvent) => void) {
+  const turns = (mockTurns[id] ??= []);
+  if (text || code) turns.push({ id: Date.now(), role: "user", content: text, code, created_at: "" });
+  else turns.push({ id: Date.now(), role: "user", content: "(The candidate has joined. Greet them in one sentence and ask your first question.)", code: null, created_at: "" });
+  const reply = turns.length <= 1
+    ? "Hi, thanks for joining. Given an array of integers and a target, return the indices of the two numbers that add up to the target. How would you approach it?"
+    : "Good. Walk me through what happens with the input [3, 3] and target 6. Does your code still work?";
+  for (const w of reply.split(/(\s+)/)) {
+    await new Promise((r) => setTimeout(r, 8));
+    onEvent({ type: "delta", text: w });
+  }
+  turns.push({ id: Date.now() + 1, role: "assistant", content: reply, code: null, created_at: "" });
+  onEvent({ type: "done", attemptId: Date.now(), provider: "Mock · browser", costUsd: 0 });
+}
 
 async function mockChat(text: string, onEvent: (e: ChatEvent) => void) {
   onEvent({ type: "sources", sources: mockSources });

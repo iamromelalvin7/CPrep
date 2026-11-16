@@ -6,6 +6,8 @@ import { api, LessonView as LessonViewT, Message, Source, TrackSummary } from ".
 import { Icon, MdIcon, remarkEmojiIcons } from "../icons";
 import { LessonProgress, topicStates } from "./CourseNav";
 import { CanvasBridge, Diagram } from "./Diagram";
+import { ListenButton, MicButton, SpeakerError } from "./VoiceControls";
+import { loadPrefs, savePrefs, speaker } from "../voice";
 
 const Lab = lazy(() => import("./Lab"));
 const Canvas = lazy(() => import("./Canvas"));
@@ -49,6 +51,7 @@ export default function LessonView({ track, lessonId, live, onBack, onOpenLesson
     }
   });
   const [pendingMermaid, setPendingMermaid] = useState<string | null>(null);
+  const [autoRead, setAutoRead] = useState(() => loadPrefs().autoRead);
   const [notesPath, setNotesPath] = useState<string | null>(null);
   const [notesBusy, setNotesBusy] = useState(false);
   const [notesMsg, setNotesMsg] = useState<string | null>(null);
@@ -76,8 +79,12 @@ export default function LessonView({ track, lessonId, live, onBack, onOpenLesson
           if (e.type === "done") setLastMeta(`${e.provider}${e.costUsd > 0 ? ` · $${e.costUsd.toFixed(4)}` : " · free"}`);
           if (e.type === "error") setError(e.message);
         });
-        await load();
+        const v = await load();
         onChanged();
+        if (loadPrefs().autoRead) {
+          const last = [...v.messages].reverse().find((m) => m.role === "assistant");
+          if (last) speaker.speak(last.content, `msg-${last.id}`);
+        }
       } catch (e) {
         setError(String(e));
         if (text) setDraft(text);
@@ -315,6 +322,7 @@ export default function LessonView({ track, lessonId, live, onBack, onOpenLesson
             />
           </>
         )}
+        <div className="empty-lesson"><SpeakerError /></div>
         {error && (
           <div className="empty-lesson">
             <div className="error-note" role="alert">{error}</div>
@@ -344,7 +352,23 @@ export default function LessonView({ track, lessonId, live, onBack, onOpenLesson
             onBlur={() => (leaveOnTab.current = false)}
           />
           <div className="composer-row">
-            <span className="faint">{lastMeta ?? (live ? "Live: Claude teaches" : "Test mode: free model")}</span>
+            <span className="faint composer-meta">
+              <MicButton disabled={!!pending} onText={(t) => setDraft((d) => (d ? `${d} ${t}` : t))} />
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={autoRead}
+                  onChange={(e) => {
+                    setAutoRead(e.target.checked);
+                    savePrefs({ ...loadPrefs(), autoRead: e.target.checked });
+                    if (e.target.checked) api.voiceWarmUp().catch(() => {});
+                    else speaker.stop();
+                  }}
+                />
+                Read replies aloud
+              </label>
+              <span>{lastMeta ?? (live ? "Live: Claude teaches" : "Test mode: free model")}</span>
+            </span>
             <div className="row" style={{ marginTop: 0 }}>
               {live && (
                 <label className="toggle">
@@ -437,6 +461,7 @@ function Turn({ message, streaming }: { message: Message; streaming?: boolean })
           {linkCitations(message.content)}
         </Markdown>
         {streaming && <span className="caret" aria-hidden="true" />}
+        {!streaming && message.content && message.id > 0 && <ListenButton text={message.content} id={`msg-${message.id}`} />}
       </div>
       {sources.length > 0 && (
         <aside className="margin" aria-label="Sources from your files">

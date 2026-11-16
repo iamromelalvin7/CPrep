@@ -1,5 +1,6 @@
-import { useState } from "react";
-import { api, Settings } from "../api";
+import { useEffect, useState } from "react";
+import { api, Settings, VoiceStatus } from "../api";
+import { loadPrefs, savePrefs, speaker, useSpeaker, VoicePrefs } from "../voice";
 
 export default function SettingsView({ settings, onChange }: { settings: Settings | null; onChange: () => void }) {
   const [error, setError] = useState<string | null>(null);
@@ -28,6 +29,7 @@ export default function SettingsView({ settings, onChange }: { settings: Setting
       {error && <div className="error-note" role="alert">{error}</div>}
 
       <dl className="settings-list">
+        <VoiceSettings />
         <div className="setting">
           <dt>Who teaches</dt>
           <dd>
@@ -97,6 +99,82 @@ export default function SettingsView({ settings, onChange }: { settings: Setting
           </dd>
         </div>
       </dl>
+    </div>
+  );
+}
+
+function VoiceSettings() {
+  const [status, setStatus] = useState<VoiceStatus | null>(null);
+  const [prefs, setPrefs] = useState<VoicePrefs>(loadPrefs);
+  const [warming, setWarming] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const speaking = useSpeaker();
+
+  const refresh = () => api.voiceStatus().then(setStatus).catch((e) => setError(String(e)));
+  useEffect(() => {
+    refresh();
+  }, []);
+
+  const update = (p: Partial<VoicePrefs>) => {
+    const next = { ...prefs, ...p };
+    setPrefs(next);
+    savePrefs(next);
+  };
+
+  const test = async () => {
+    setError(null);
+    if (!status?.running) setWarming(true);
+    await speaker.speak("Hi, I'm your CPrep tutor. Let's learn something useful today.", "voice-test");
+    setWarming(false);
+    refresh();
+  };
+
+  return (
+    <div className="setting">
+      <dt>Voice</dt>
+      <dd>
+        <div className="voice-grid">
+          <label className="field">
+            <span>Tutor voice</span>
+            <select value={prefs.voice} onChange={(e) => update({ voice: e.target.value })}>
+              {(status?.voices ?? [["af_heart", "Heart (American, female)"]]).map(([id, label]) => (
+                <option key={id} value={id}>{label}</option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>Speed: {prefs.speed.toFixed(1)}x</span>
+            <input
+              type="range"
+              min={0.7}
+              max={1.4}
+              step={0.1}
+              value={prefs.speed}
+              onChange={(e) => update({ speed: Number(e.target.value) })}
+            />
+          </label>
+        </div>
+        <div className="row" style={{ marginTop: 4 }}>
+          <button className="btn" disabled={speaking.key === "voice-test" && speaking.status !== "idle"} onClick={test}>
+            {speaking.key === "voice-test" && speaking.status !== "idle" ? <span className="spinner" /> : null}
+            {warming && speaking.status === "loading" ? "Starting the voice…" : "Test voice"}
+          </button>
+        </div>
+        {status && (
+          <p className="faint" style={{ marginBottom: 0 }}>
+            Speaking (Kokoro, on this laptop):{" "}
+            {status.python_found ? (
+              <span className="ok">{status.running ? "running" : "ready, starts on first use (about 30 s)"}</span>
+            ) : (
+              <span className="bad">Python not found at {status.python}. Set KOKORO_PYTHON in .env.</span>
+            )}
+            <br />
+            Listening (Groq Whisper, online): {status.stt_ready ? <span className="ok">ready</span> : <span className="bad">add GROQ_API_KEY to .env</span>}.
+            {" "}A new voice downloads once (about 0.5 MB) the first time you use it.
+          </p>
+        )}
+        {(error || speaking.error) && <div className="error-note" role="alert">{error ?? speaking.error}</div>}
+      </dd>
     </div>
   );
 }

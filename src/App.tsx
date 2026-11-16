@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { api, Settings as SettingsT, TrackSummary } from "./api";
 import { Icon } from "./icons";
@@ -7,6 +7,9 @@ import LessonView from "./views/Lesson";
 import SettingsView from "./views/Settings";
 import Schedule from "./views/Schedule";
 import Review from "./views/Review";
+
+// The interview room loads Monaco, so it is only fetched when opened.
+const InterviewRoom = lazy(() => import("./views/Interview"));
 import CourseNav, { LessonProgress } from "./views/CourseNav";
 
 export type Route =
@@ -14,7 +17,8 @@ export type Route =
   | { kind: "lesson"; trackId: string; lessonId: number }
   | { kind: "settings" }
   | { kind: "schedule" }
-  | { kind: "review" };
+  | { kind: "review" }
+  | { kind: "interview" };
 
 const SIDEBAR_KEY = "cprep.sidebar";
 
@@ -121,6 +125,11 @@ export default function App() {
               <span>Review</span>
               {dueCards > 0 ? <span className="due-badge" aria-label={`${dueCards} due`}>{dueCards}</span> : <span />}
             </button>
+            <button className="track-link" aria-current={route.kind === "interview" ? "page" : undefined} onClick={() => go({ kind: "interview" })}>
+              <Icon name="interview" size={14} />
+              <span>Mock interview</span>
+              <span />
+            </button>
           </div>
           <ul className="track-list">
             {tracks.map((t) => {
@@ -176,6 +185,11 @@ export default function App() {
             {route.kind === "settings" && <SettingsView settings={settings} onChange={refresh} />}
             {route.kind === "schedule" && <Schedule tracks={tracks} onChanged={refresh} />}
             {route.kind === "review" && <Review tracks={tracks} onChanged={refresh} />}
+            {route.kind === "interview" && (
+              <Suspense fallback={<div className="page"><span className="spinner" aria-label="Loading" /></div>}>
+                <InterviewRoom tracks={tracks} />
+              </Suspense>
+            )}
             {route.kind === "track" && current && (
               <TrackHome track={current} onOpenLesson={(id) => go({ kind: "lesson", trackId: current.id, lessonId: id })} onChanged={refresh} />
             )}

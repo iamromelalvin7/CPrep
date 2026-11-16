@@ -4,6 +4,7 @@ pub mod canvas;
 pub mod config;
 pub mod db;
 pub mod ingest;
+pub mod interview;
 pub mod lab;
 pub mod llm;
 pub mod rag;
@@ -11,6 +12,7 @@ pub mod review;
 pub mod runner;
 pub mod schedule;
 pub mod tutor;
+pub mod voice;
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
@@ -29,6 +31,7 @@ pub struct AppState {
     pub db: Mutex<Connection>,
     pub cfg: Config,
     pub live: AtomicBool,
+    pub tts: voice::Tts,
 }
 
 type CmdResult<T> = Result<T, String>;
@@ -846,6 +849,104 @@ fn lessons_for_cards(state: State<'_, AppState>) -> CmdResult<Vec<review::Lesson
     review::lessons_for_cards(&state.db.lock().unwrap()).map_err(err)
 }
 
+// ---------- Voice ----------
+
+#[tauri::command]
+async fn voice_status(state: State<'_, AppState>) -> CmdResult<voice::VoiceStatus> {
+    Ok(state.tts.status(&state.cfg).await)
+}
+
+/// Start the Kokoro process ahead of time (the first start takes ~30 s on CPU).
+#[tauri::command]
+async fn voice_warm_up(state: State<'_, AppState>) -> CmdResult<()> {
+    state.tts.warm_up().await.map_err(err)
+}
+
+#[tauri::command]
+async fn speak(state: State<'_, AppState>, text: String, voice: String, speed: f64) -> CmdResult<voice::Speech> {
+    let v = if voice::VOICES.iter().any(|(id, _)| *id == voice) { voice } else { "af_heart".into() };
+    state.tts.speak(&text, &v, speed).await.map_err(err)
+}
+
+#[tauri::command]
+async fn transcribe(state: State<'_, AppState>, audio_b64: String, mime: String) -> CmdResult<String> {
+    voice::transcribe(&state.cfg, &audio_b64, &mime).await.map_err(err)
+}
+
+// ---------- Mock interviews ----------
+
+#[derive(Serialize)]
+struct InterviewView {
+    interview: interview::Interview,
+    turns: Vec<interview::Turn>,
+}
+
+#[tauri::command]
+fn start_interview(state: State<'_, AppState>, kind: String, track_id: Option<String>, minutes: i64) -> CmdResult<i64> {
+    let k = interview::Kind::parse(&kind).map_err(err)?;
+    if let Some(t) = &track_id {
+        track(t)?;
+    }
+    interview::create(&state.db.lock().unwrap(), k, track_id.as_deref(), minutes).map_err(err)
+}
+
+#[tauri::command]
+fn get_interview(state: State<'_, AppState>, id: i64) -> CmdResult<InterviewView> {
+    let conn = state.db.lock().unwrap();
+    Ok(InterviewView { interview: interview::get(&conn, id).map_err(err)?, turns: interview::turns(&conn, id).map_err(err)? })
+}
+
+#[tauri::command]
+fn list_interviews(state: State<'_, AppState>) -> CmdResult<Vec<interview::Interview>> {
+    interview::list(&state.db.lock().unwrap()).map_err(err)
+}
+
+/// One interviewer turn (empty text = start). Streams over `on_event`.
+#[tauri::command]
+async fn interview_turn(
+    state: State<'_, AppState>,
+    id: i64,
+    text: String,
+    code: Option<String>,
+    on_event: Channel<LabEvent>,
+) -> CmdResult<()> {
+    let (system, msgs) = {
+        let conn = state.db.lock().unwrap();
+        let iv = interview::get(&conn, id).map_err(err)?;
+        let t = iv.track_id.as_deref().and_then(db::track);
+        let known = interview::known_topics(&conn, iv.track_id.as_deref());
+        let msgs = interview::prepare_turn(&conn, &iv, &text, code.as_deref()).map_err(err)?;
+        (interview::system_prompt(iv.kind, t, iv.minutes, &known), msgs)
+    };
+    let provider = llm::route(&state.cfg, state.live.load(Ordering::Relaxed), Task::Tutor).map_err(err)?;
+    let result = provider
+        .stream_chat(&system, &msgs, |d| {
+            let _ = on_event.send(LabEvent::Delta { text: d.to_string() });
+        })
+        .await;
+    match result {
+        Ok((reply, usage)) => {
+            let conn = state.db.lock().unwrap();
+            db::record_usage(&conn, &usage).map_err(err)?;
+            let mid = interview::save_reply(&conn, id, reply.trim()).map_err(err)?;
+            let _ = on_event.send(LabEvent::Done { attempt_id: mid, provider: provider.label_for(&usage), cost_usd: usage.cost_usd() });
+            Ok(())
+        }
+        Err(e) => {
+            let _ = on_event.send(LabEvent::Error { message: e.to_string() });
+            Err(err(e))
+        }
+    }
+}
+
+#[tauri::command]
+async fn end_interview(state: State<'_, AppState>, id: i64) -> CmdResult<serde_json::Value> {
+    // The debrief is a judgement call: use the stronger curriculum model in live mode.
+    let provider = llm::route(&state.cfg, state.live.load(Ordering::Relaxed), Task::Curriculum).map_err(err)?;
+    let (v, _) = interview::debrief(&state.db, &provider, id).await.map_err(err)?;
+    Ok(v)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -876,7 +977,15 @@ pub fn run() {
                 == Some("1");
             let cfg = Config::load();
             let live = live && cfg.anthropic_key.is_some();
-            app.manage(AppState { db: Mutex::new(conn), cfg, live: AtomicBool::new(live) });
+            // The Kokoro sidecar script ships as a resource; in dev it is read from the source tree.
+            let script = app
+                .path()
+                .resolve("sidecar/kokoro_server.py", tauri::path::BaseDirectory::Resource)
+                .ok()
+                .filter(|p| p.is_file())
+                .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sidecar").join("kokoro_server.py"));
+            let tts = voice::Tts::new(voice::default_python(), script);
+            app.manage(AppState { db: Mutex::new(conn), cfg, live: AtomicBool::new(live), tts });
 
             build_tray(app)?;
             // Started at login with --hidden: stay in the tray. Otherwise show the window.
@@ -928,6 +1037,15 @@ pub fn run() {
             rate_card,
             make_cards,
             lessons_for_cards,
+            voice_status,
+            voice_warm_up,
+            speak,
+            transcribe,
+            start_interview,
+            get_interview,
+            list_interviews,
+            interview_turn,
+            end_interview,
             get_canvas,
             save_canvas,
             canvas_task,
