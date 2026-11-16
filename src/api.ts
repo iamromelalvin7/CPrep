@@ -126,6 +126,43 @@ export type LabEvent =
 
 export type CanvasState = { scene: string | null; task: string | null; critique: string | null };
 
+export type Repeat = "none" | "daily" | "weekdays" | "weekly";
+export type Session = {
+  id: number;
+  track_id: string;
+  lesson_id: number | null;
+  lesson_title: string | null;
+  title: string;
+  starts_at: string;
+  duration_min: number;
+  repeat: Repeat;
+};
+export type NewSession = Omit<Session, "id" | "lesson_title">;
+export type Occurrence = { session: Session; start: string; end: string };
+export type ReminderSettings = { offsets: number[]; review_time: string | null; keep_in_tray: boolean; autostart: boolean };
+export type Memory = { stability: number; difficulty: number; reps: number; lapses: number };
+export type Card = {
+  id: number;
+  track_id: string;
+  lesson_id: number | null;
+  lesson_title: string | null;
+  front: string;
+  back: string;
+  due: string;
+  memory: Memory;
+  last_review: string | null;
+  preview: string[];
+};
+export type ReviewSummary = {
+  due_now: number;
+  total: number;
+  new_cards: number;
+  reviewed_today: number;
+  next_due: string | null;
+  by_track: [string, number][];
+};
+export type LessonCards = { lesson_id: number; title: string; track_id: string; cards: number; status: string };
+
 export const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -183,6 +220,18 @@ export const api = {
     ch.onmessage = onEvent;
     await tauriInvoke("critique_canvas", { lessonId, description, imagePng, onEvent: ch });
   },
+  listSessions: () => call<Session[]>("list_sessions"),
+  getAgenda: (from: string, to: string) => call<Occurrence[]>("get_agenda", { from, to }),
+  addSession: (session: NewSession) => call<number>("add_session", { session }),
+  deleteSession: (id: number) => call<void>("delete_session", { id }),
+  getReminders: () => call<ReminderSettings>("get_reminders"),
+  saveReminders: (settings: ReminderSettings) => call<void>("save_reminders", { settings }),
+  testNotification: () => call<void>("test_notification"),
+  reviewSummary: () => call<ReviewSummary>("review_summary"),
+  dueCards: (trackId: string | null) => call<Card[]>("due_cards", { trackId }),
+  rateCard: (cardId: number, rating: 1 | 2 | 3 | 4) => call<string>("rate_card", { cardId, rating }),
+  makeCards: (lessonId: number) => call<number>("make_cards", { lessonId }),
+  lessonsForCards: () => call<LessonCards[]>("lessons_for_cards"),
   pickFolder: async (): Promise<string | null> => {
     if (!inTauri) return "C:\\Users\\you\\Desktop\\programming\\BACKEND JOURNEY";
     const { open } = await import("@tauri-apps/plugin-dialog");
@@ -331,6 +380,20 @@ let mockMessages: Message[] = [
 
 async function mock<T>(cmd: string, args: Record<string, unknown>): Promise<T> {
   await new Promise((r) => setTimeout(r, 120));
+  if (cmd === "add_session") {
+    const n = args.session as NewSession;
+    mockSessions = [...mockSessions, { ...n, id: mockSessions.length + 10, lesson_title: null }];
+    return mockSessions.length as T;
+  }
+  if (cmd === "delete_session") {
+    mockSessions = mockSessions.filter((x) => x.id !== args.id);
+    return null as T;
+  }
+  if (cmd === "get_agenda") return mockAgenda(String(args.from), String(args.to)) as T;
+  if (cmd === "rate_card") {
+    mockCards = mockCards.filter((c) => c.id !== args.cardId);
+    return new Date().toISOString() as T;
+  }
   if (cmd === "new_exercise") {
     const ex = { ...mockExercise, id: mockExercises.length + 1, title: "Count words" };
     mockExercises = [...mockExercises, ex];
@@ -396,6 +459,24 @@ async function mock<T>(cmd: string, args: Record<string, unknown>): Promise<T> {
     } satisfies RunOutput,
     write_notes: "C:\\Users\\you\\Documents\\CPrep Notes\\Backend Engineering\\06 Routes and views.md",
     notes_path: null,
+    list_sessions: mockSessions,
+    get_reminders: { offsets: [30, 15, 0], review_time: "19:00", keep_in_tray: true, autostart: false } satisfies ReminderSettings,
+    save_reminders: null,
+    test_notification: null,
+    review_summary: {
+      due_now: mockCards.length,
+      total: 23,
+      new_cards: 5,
+      reviewed_today: 4,
+      next_due: new Date(Date.now() + 3 * 3600_000).toISOString(),
+      by_track: [["backend", mockCards.length]],
+    } satisfies ReviewSummary,
+    due_cards: mockCards,
+    make_cards: 6,
+    lessons_for_cards: [
+      { lesson_id: 1, title: "Routes and URL rules", track_id: "backend", cards: 6, status: "done" },
+      { lesson_id: 6, title: "Routes and views", track_id: "backend", cards: 0, status: "in_progress" },
+    ] satisfies LessonCards[],
     get_canvas: { scene: null, task: null, critique: null } satisfies CanvasState,
     save_canvas: null,
     canvas_task:
@@ -468,6 +549,36 @@ async function mockCritique(description: string, onEvent: (e: LabEvent) => void)
   }
   onEvent({ type: "done", attemptId: 0, provider: "Mock · browser", costUsd: 0 });
 }
+
+const pad = (n: number) => String(n).padStart(2, "0");
+const localStamp = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+const today = new Date();
+let mockSessions: Session[] = [
+  { id: 1, track_id: "backend", lesson_id: 6, lesson_title: "Routes and views", title: "Backend", starts_at: localStamp(new Date(today.getFullYear(), today.getMonth(), today.getDate(), 19, 0)), duration_min: 60, repeat: "weekdays" },
+  { id: 2, track_id: "networking", lesson_id: null, lesson_title: null, title: "Subnetting practice", starts_at: localStamp(new Date(today.getFullYear(), today.getMonth(), today.getDate() + 2, 7, 30)), duration_min: 45, repeat: "weekly" },
+  { id: 3, track_id: "dsa", lesson_id: null, lesson_title: null, title: "Two pointers drills", starts_at: localStamp(new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1, 21, 0)), duration_min: 30, repeat: "none" },
+];
+
+function mockAgenda(from: string, to: string): Occurrence[] {
+  const out: Occurrence[] = [];
+  const a = new Date(from), b = new Date(to);
+  for (const s of mockSessions) {
+    const first = new Date(s.starts_at);
+    for (let d = new Date(a); d < b; d.setDate(d.getDate() + 1)) {
+      const at = new Date(d.getFullYear(), d.getMonth(), d.getDate(), first.getHours(), first.getMinutes());
+      if (at < first || at < a || at >= b) continue;
+      const wd = at.getDay();
+      const ok = s.repeat === "daily" || (s.repeat === "weekdays" && wd > 0 && wd < 6) || (s.repeat === "weekly" && wd === first.getDay()) || (s.repeat === "none" && at.getTime() === first.getTime());
+      if (ok) out.push({ session: s, start: at.toISOString(), end: new Date(at.getTime() + s.duration_min * 60000).toISOString() });
+    }
+  }
+  return out.sort((x, y) => x.start.localeCompare(y.start));
+}
+
+let mockCards: Card[] = [
+  { id: 1, track_id: "backend", lesson_id: 1, lesson_title: "Routes and URL rules", front: "What does Flask return when a route only allows `GET` and the client sends `POST`?", back: "`405 Method Not Allowed`. List both methods in `methods=[...]` and branch on `request.method` to accept both.", due: today.toISOString(), memory: { stability: 3.7, difficulty: 5, reps: 1, lapses: 0 }, last_review: null, preview: ["10m", "2d", "4d", "14d"] },
+  { id: 2, track_id: "backend", lesson_id: 1, lesson_title: "Routes and URL rules", front: "Why does returning a `dict` from a Flask view produce JSON?", back: "Flask runs `jsonify` on dict and list return values, which serialises them and sets `Content-Type: application/json`.", due: today.toISOString(), memory: { stability: 0, difficulty: 0, reps: 0, lapses: 0 }, last_review: null, preview: ["10m", "1d", "4d", "14d"] },
+];
 
 async function mockChat(text: string, onEvent: (e: ChatEvent) => void) {
   onEvent({ type: "sources", sources: mockSources });

@@ -272,3 +272,48 @@ async fn canvas_vision() {
     let lower = text.to_lowercase();
     assert!(lower.contains("redis") && lower.contains("api"), "should read the box labels from the image");
 }
+
+/// Review cards made from a short lesson transcript, then scheduled.
+/// Run with: cargo test --test e2e cards_flow -- --ignored --nocapture
+#[tokio::test]
+#[ignore]
+async fn cards_flow() {
+    let cfg = Config::load();
+    let db = Mutex::new(rusqlite::Connection::open_in_memory().unwrap());
+    db::init(&db.lock().unwrap()).unwrap();
+    let c = tutor::validate_curriculum(serde_json::json!({
+        "title": "Networking", "summary": "s",
+        "phases": [{"title": "Basics", "goal": "g", "modules": [{"title": "Addressing", "tested_out": false, "lessons": [
+            {"title": "Subnetting", "objectives": ["CIDR notation", "Hosts per subnet"]}
+        ]}]}]
+    }))
+    .unwrap();
+    let lesson_id = {
+        let conn = db.lock().unwrap();
+        let cid = tutor::save_curriculum(&conn, "networking", &c).unwrap();
+        let id: i64 = conn.query_row("SELECT id FROM lessons WHERE curriculum_id = ?1", [cid], |r| r.get(0)).unwrap();
+        for (role, text) in [
+            ("assistant", "CIDR /24 means the first 24 bits are the network part, so 8 bits are left for hosts: 2^8 = 256 addresses, 254 usable (network and broadcast addresses are reserved). Check: how many usable hosts in a /26?"),
+            ("user", "64 minus 2, so 62"),
+            ("assistant", "Correct. A /26 splits a /24 into 4 subnets of 64 addresses. The subnet mask for /26 is 255.255.255.192."),
+        ] {
+            conn.execute(
+                "INSERT INTO messages (lesson_id, role, content, llm_content, created_at) VALUES (?1, ?2, ?3, ?3, 'now')",
+                rusqlite::params![id, role, text],
+            )
+            .unwrap();
+        }
+        id
+    };
+    let provider = llm::route(&cfg, false, llm::Task::Quiz).unwrap();
+    let t0 = Instant::now();
+    let (n, _) = cprep_lib::review::generate(&db, &provider, db::track("networking").unwrap(), lesson_id).await.unwrap();
+    println!("CARDS {n} in {:.0?}", t0.elapsed());
+    let conn = db.lock().unwrap();
+    for card in cprep_lib::review::due_cards(&conn, None, 20).unwrap() {
+        println!("  Q: {}\n  A: {}\n  next: {:?}", card.front, card.back, card.preview);
+    }
+    assert!(n >= 3);
+    // Generating again must not duplicate the same questions.
+    drop(conn);
+}

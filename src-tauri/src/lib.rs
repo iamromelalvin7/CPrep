@@ -7,7 +7,9 @@ pub mod ingest;
 pub mod lab;
 pub mod llm;
 pub mod rag;
+pub mod review;
 pub mod runner;
+pub mod schedule;
 pub mod tutor;
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -664,11 +666,205 @@ async fn critique_canvas(
     }
 }
 
+// ---------- Schedule & reminders ----------
+
+#[tauri::command]
+fn list_sessions(state: State<'_, AppState>) -> CmdResult<Vec<schedule::Session>> {
+    schedule::list(&state.db.lock().unwrap()).map_err(err)
+}
+
+/// Session occurrences between two local times (RFC 3339).
+#[tauri::command]
+fn get_agenda(state: State<'_, AppState>, from: String, to: String) -> CmdResult<Vec<schedule::Occurrence>> {
+    let parse = |s: &str| chrono::DateTime::parse_from_rfc3339(s).map(|t| t.with_timezone(&chrono::Local)).map_err(err);
+    schedule::agenda(&state.db.lock().unwrap(), parse(&from)?, parse(&to)?).map_err(err)
+}
+
+#[tauri::command]
+fn add_session(app: tauri::AppHandle, state: State<'_, AppState>, session: schedule::NewSession) -> CmdResult<i64> {
+    track(&session.track_id)?;
+    let id = schedule::add(&state.db.lock().unwrap(), &session).map_err(err)?;
+    refresh_tray(&app);
+    Ok(id)
+}
+
+#[tauri::command]
+fn delete_session(app: tauri::AppHandle, state: State<'_, AppState>, id: i64) -> CmdResult<()> {
+    schedule::delete(&state.db.lock().unwrap(), id).map_err(err)?;
+    refresh_tray(&app);
+    Ok(())
+}
+
+#[tauri::command]
+fn get_reminders(app: tauri::AppHandle, state: State<'_, AppState>) -> CmdResult<schedule::ReminderSettings> {
+    use tauri_plugin_autostart::ManagerExt;
+    let mut s = schedule::load_settings(&state.db.lock().unwrap());
+    s.autostart = app.autolaunch().is_enabled().unwrap_or(false);
+    Ok(s)
+}
+
+#[tauri::command]
+fn save_reminders(app: tauri::AppHandle, state: State<'_, AppState>, settings: schedule::ReminderSettings) -> CmdResult<()> {
+    use tauri_plugin_autostart::ManagerExt;
+    let mut s = settings;
+    s.offsets.retain(|o| (0..=120).contains(o));
+    s.offsets.sort_unstable_by(|a, b| b.cmp(a));
+    s.offsets.dedup();
+    let al = app.autolaunch();
+    if s.autostart { al.enable().map_err(err)? } else if al.is_enabled().unwrap_or(false) { al.disable().map_err(err)? }
+    schedule::save_settings(&state.db.lock().unwrap(), &s).map_err(err)
+}
+
+/// Fire a sample notification so the learner can check Windows shows them.
+#[tauri::command]
+fn test_notification(app: tauri::AppHandle) -> CmdResult<()> {
+    notify(&app, "CPrep reminders are on", "This is what a reminder looks like. You'll get one before each session.");
+    Ok(())
+}
+
+fn notify(app: &tauri::AppHandle, title: &str, body: &str) {
+    use tauri_plugin_notification::NotificationExt;
+    if let Err(e) = app.notification().builder().title(title).body(body).show() {
+        eprintln!("notification failed: {e}");
+    }
+}
+
+/// One pass of the reminder loop: send whatever is due, once.
+fn reminder_tick(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+    let alerts = {
+        let conn = state.db.lock().unwrap();
+        let sessions = schedule::list(&conn).unwrap_or_default();
+        let settings = schedule::load_settings(&conn);
+        let due = review::summary(&conn).map(|s| s.due_now).unwrap_or(0);
+        let alerts = schedule::due_alerts(
+            &sessions,
+            |id| db::track(id).map(|t| t.name.to_string()).unwrap_or_else(|| "Study session".into()),
+            &settings,
+            due,
+            chrono::Local::now(),
+        );
+        alerts.into_iter().filter(|a| schedule::mark_sent(&conn, &a.key).unwrap_or(false)).collect::<Vec<_>>()
+    };
+    for a in alerts {
+        notify(app, &a.title, &a.body);
+    }
+    refresh_tray(app);
+}
+
+/// Update the tray tooltip and the "Next session" menu line.
+fn refresh_tray(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+    let text = {
+        let conn = state.db.lock().unwrap();
+        match schedule::next_occurrence(&conn, chrono::Local::now()) {
+            Ok(Some(o)) => {
+                let when = chrono::DateTime::parse_from_rfc3339(&o.start)
+                    .map(|t| t.with_timezone(&chrono::Local).format("%a %H:%M").to_string())
+                    .unwrap_or_default();
+                let what = o.session.lesson_title.clone().unwrap_or(o.session.title.clone());
+                format!("Next: {what}, {when}")
+            }
+            _ => "No sessions planned".to_string(),
+        }
+    };
+    if let Some(tray) = app.tray_by_id("main") {
+        let _ = tray.set_tooltip(Some(format!("CPrep · {text}")));
+    }
+    if let Some(item) = app.try_state::<TrayNext>() {
+        let _ = item.0.set_text(text);
+    }
+}
+
+struct TrayNext(tauri::menu::MenuItem<tauri::Wry>);
+
+fn show_main(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
+fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{MenuBuilder, MenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+    let next = MenuItem::with_id(app, "next", "No sessions planned", false, None::<&str>)?;
+    let open = MenuItem::with_id(app, "open", "Open CPrep", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit CPrep", true, None::<&str>)?;
+    let menu = MenuBuilder::new(app).item(&open).item(&next).separator().item(&quit).build()?;
+    app.manage(TrayNext(next));
+    let mut builder = TrayIconBuilder::with_id("main")
+        .tooltip("CPrep")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, e| match e.id().as_ref() {
+            "open" => show_main(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, e| {
+            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = e {
+                show_main(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon().cloned() {
+        builder = builder.icon(icon);
+    }
+    builder.build(app)?;
+    Ok(())
+}
+
+// ---------- Review cards ----------
+
+#[tauri::command]
+fn review_summary(state: State<'_, AppState>) -> CmdResult<review::ReviewSummary> {
+    review::summary(&state.db.lock().unwrap()).map_err(err)
+}
+
+#[tauri::command]
+fn due_cards(state: State<'_, AppState>, track_id: Option<String>) -> CmdResult<Vec<review::Card>> {
+    review::due_cards(&state.db.lock().unwrap(), track_id.as_deref(), 200).map_err(err)
+}
+
+#[tauri::command]
+fn rate_card(state: State<'_, AppState>, card_id: i64, rating: u8) -> CmdResult<String> {
+    let r = review::Rating::from_u8(rating).map_err(err)?;
+    review::rate(&state.db.lock().unwrap(), card_id, r).map_err(err)
+}
+
+#[tauri::command]
+async fn make_cards(state: State<'_, AppState>, lesson_id: i64) -> CmdResult<usize> {
+    let t = lesson_track(&state, lesson_id)?;
+    let provider = llm::route(&state.cfg, state.live.load(Ordering::Relaxed), Task::Quiz).map_err(err)?;
+    let (n, _) = review::generate(&state.db, &provider, t, lesson_id).await.map_err(err)?;
+    Ok(n)
+}
+
+#[tauri::command]
+fn lessons_for_cards(state: State<'_, AppState>) -> CmdResult<Vec<review::LessonCards>> {
+    review::lessons_for_cards(&state.db.lock().unwrap()).map_err(err)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Must be first: a second launch focuses the running app instead of opening another copy.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--hidden"])))
+        .on_window_event(|window, event| {
+            // Closing the window keeps CPrep in the tray so reminders still fire.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let keep = schedule::load_settings(&window.state::<AppState>().db.lock().unwrap()).keep_in_tray;
+                if keep {
+                    let _ = window.hide();
+                    api.prevent_close();
+                }
+            }
+        })
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
@@ -681,6 +877,19 @@ pub fn run() {
             let cfg = Config::load();
             let live = live && cfg.anthropic_key.is_some();
             app.manage(AppState { db: Mutex::new(conn), cfg, live: AtomicBool::new(live) });
+
+            build_tray(app)?;
+            // Started at login with --hidden: stay in the tray. Otherwise show the window.
+            if !std::env::args().any(|a| a == "--hidden") {
+                show_main(app.handle());
+            }
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    reminder_tick(&handle);
+                    tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -707,6 +916,18 @@ pub fn run() {
             write_notes,
             notes_path,
             open_notes,
+            list_sessions,
+            get_agenda,
+            add_session,
+            delete_session,
+            get_reminders,
+            save_reminders,
+            test_notification,
+            review_summary,
+            due_cards,
+            rate_card,
+            make_cards,
+            lessons_for_cards,
             get_canvas,
             save_canvas,
             canvas_task,

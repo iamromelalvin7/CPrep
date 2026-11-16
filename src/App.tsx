@@ -5,12 +5,16 @@ import { Icon } from "./icons";
 import TrackHome from "./views/TrackHome";
 import LessonView from "./views/Lesson";
 import SettingsView from "./views/Settings";
+import Schedule from "./views/Schedule";
+import Review from "./views/Review";
 import CourseNav, { LessonProgress } from "./views/CourseNav";
 
 export type Route =
   | { kind: "track"; trackId: string }
   | { kind: "lesson"; trackId: string; lessonId: number }
-  | { kind: "settings" };
+  | { kind: "settings" }
+  | { kind: "schedule" }
+  | { kind: "review" };
 
 const SIDEBAR_KEY = "cprep.sidebar";
 
@@ -30,12 +34,14 @@ export default function App() {
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const [progress, setProgress] = useState<LessonProgress | null>(null);
   const [navKey, setNavKey] = useState(0);
+  const [dueCards, setDueCards] = useState(0);
   const reduce = useReducedMotion();
 
   const refresh = useCallback(async () => {
-    const [t, s] = await Promise.all([api.listTracks(), api.getSettings()]);
+    const [t, s, r] = await Promise.all([api.listTracks(), api.getSettings(), api.reviewSummary().catch(() => null)]);
     setTracks(t);
     setSettings(s);
+    setDueCards(r?.due_now ?? 0);
     setNavKey((k) => k + 1);
   }, []);
 
@@ -57,8 +63,8 @@ export default function App() {
     setMenuOpen(false);
   };
 
-  const current = route.kind === "settings" ? null : tracks.find((t) => t.id === route.trackId) ?? null;
-  const key = route.kind === "lesson" ? `l${route.lessonId}` : route.kind === "track" ? `t${route.trackId}` : "s";
+  const current = route.kind === "track" || route.kind === "lesson" ? tracks.find((t) => t.id === route.trackId) ?? null : null;
+  const key = route.kind === "lesson" ? `l${route.lessonId}` : route.kind === "track" ? `t${route.trackId}` : route.kind;
 
   return (
     <div className="shell" data-collapsed={collapsed}>
@@ -103,9 +109,22 @@ export default function App() {
             onBack={() => go({ kind: "track", trackId: current.id })}
           />
         ) : (
+          <>
+          <div className="nav-tools">
+            <button className="track-link" aria-current={route.kind === "schedule" ? "page" : undefined} onClick={() => go({ kind: "schedule" })}>
+              <Icon name="calendar" size={14} />
+              <span>Schedule</span>
+              <span />
+            </button>
+            <button className="track-link" aria-current={route.kind === "review" ? "page" : undefined} onClick={() => go({ kind: "review" })}>
+              <Icon name="cards" size={14} />
+              <span>Review</span>
+              {dueCards > 0 ? <span className="due-badge" aria-label={`${dueCards} due`}>{dueCards}</span> : <span />}
+            </button>
+          </div>
           <ul className="track-list">
             {tracks.map((t) => {
-              const active = route.kind !== "settings" && route.trackId === t.id;
+              const active = (route.kind === "track" || route.kind === "lesson") && route.trackId === t.id;
               return (
                 <li key={t.id}>
                   <button
@@ -124,6 +143,7 @@ export default function App() {
               );
             })}
           </ul>
+          </>
         )}
 
         <div className="sidebar-foot">
@@ -154,6 +174,8 @@ export default function App() {
             transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
           >
             {route.kind === "settings" && <SettingsView settings={settings} onChange={refresh} />}
+            {route.kind === "schedule" && <Schedule tracks={tracks} onChanged={refresh} />}
+            {route.kind === "review" && <Review tracks={tracks} onChanged={refresh} />}
             {route.kind === "track" && current && (
               <TrackHome track={current} onOpenLesson={(id) => go({ kind: "lesson", trackId: current.id, lessonId: id })} onChanged={refresh} />
             )}

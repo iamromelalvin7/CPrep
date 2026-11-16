@@ -195,6 +195,42 @@ pub fn init(conn: &Connection) -> Result<()> {
             critique TEXT,
             updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS sessions (
+            id INTEGER PRIMARY KEY,
+            track_id TEXT NOT NULL,
+            lesson_id INTEGER REFERENCES lessons(id) ON DELETE SET NULL,
+            title TEXT NOT NULL,
+            starts_at TEXT NOT NULL,
+            duration_min INTEGER NOT NULL,
+            repeat TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS alerts_sent (
+            key TEXT PRIMARY KEY,
+            sent_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS cards (
+            id INTEGER PRIMARY KEY,
+            track_id TEXT NOT NULL,
+            lesson_id INTEGER REFERENCES lessons(id) ON DELETE SET NULL,
+            front TEXT NOT NULL,
+            back TEXT NOT NULL,
+            due TEXT NOT NULL,
+            stability REAL NOT NULL DEFAULT 0,
+            difficulty REAL NOT NULL DEFAULT 0,
+            reps INTEGER NOT NULL DEFAULT 0,
+            lapses INTEGER NOT NULL DEFAULT 0,
+            last_review TEXT,
+            suspended INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS cards_due ON cards(due);
+        CREATE TABLE IF NOT EXISTS reviews (
+            id INTEGER PRIMARY KEY,
+            card_id INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+            rating INTEGER NOT NULL,
+            reviewed_at TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL

@@ -22,6 +22,8 @@ type IconName =
   | "refresh"
   | "notes"
   | "canvas"
+  | "calendar"
+  | "cards"
   | "spark";
 
 const paths: Record<IconName, ReactElement> = {
@@ -94,6 +96,18 @@ const paths: Record<IconName, ReactElement> = {
     <>
       <rect x="2" y="2.5" width="12" height="9" rx="1.4" />
       <path d="M5 14l3-2.5 3 2.5M5 8.5l2-2 1.6 1.6L11 5.5" />
+    </>
+  ),
+  calendar: (
+    <>
+      <rect x="2.5" y="3.5" width="11" height="10" rx="1.4" />
+      <path d="M2.5 6.5h11M5.5 2v3M10.5 2v3" />
+    </>
+  ),
+  cards: (
+    <>
+      <rect x="4.5" y="2.5" width="9" height="11" rx="1.4" />
+      <path d="M2.5 5v7.5a1.5 1.5 0 0 0 1.5 1.5h6" />
     </>
   ),
   spark: <path d="M8 2v3M8 11v3M2 8h3M11 8h3M3.8 3.8l2 2M10.2 10.2l2 2M12.2 3.8l-2 2M5.8 10.2l-2 2" />,

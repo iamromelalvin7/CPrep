@@ -188,8 +188,9 @@ export default function LessonView({ track, lessonId, live, onBack, onOpenLesson
   const markDone = async () => {
     await api.setLessonStatus(lesson.id, "done");
     onChanged();
-    // Notes are written in the background; they'll be ready in the notes folder.
+    // Notes and review cards are made in the background.
     api.writeNotes(lesson.id).catch(() => {});
+    api.makeCards(lesson.id).then(onChanged).catch(() => {});
     setCelebrating(true);
   };
 

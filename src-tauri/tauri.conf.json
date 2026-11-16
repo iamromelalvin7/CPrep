@@ -12,7 +12,9 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "CPrep",
+        "visible": false,
         "minWidth": 380,
         "minHeight": 560,
         "width": 1280,
