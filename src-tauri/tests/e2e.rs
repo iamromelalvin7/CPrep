@@ -102,3 +102,25 @@ async fn full_flow_on_real_folder() {
     drop(db);
     let _ = std::fs::remove_file(&tmp);
 }
+
+/// Quick check of the Gemini free tier (backup test provider): one JSON call and one streamed reply.
+/// Run with: cargo test --test e2e gemini -- --ignored --nocapture
+#[tokio::test]
+#[ignore]
+async fn gemini_smoke() {
+    let mut cfg = Config::load();
+    cfg.test_provider = "gemini".into();
+    let provider = llm::route(&cfg, false, llm::Task::Quiz).unwrap();
+    println!("PROVIDER {}", provider.label());
+    let track = db::track("networking").unwrap();
+    let t0 = Instant::now();
+    let (qs, _) = tutor::generate_quiz(&provider, track, &["TCP/UDP".into()], "").await.unwrap();
+    println!("QUIZ {} questions in {:.0?}", qs.len(), t0.elapsed());
+    let mut pieces = 0;
+    let (reply, _) = provider
+        .stream_chat("You are a concise tutor.", &[llm::ChatMsg { role: "user".into(), content: "What is a subnet mask, in two sentences?".into() }], |_| pieces += 1)
+        .await
+        .unwrap();
+    println!("STREAM {pieces} pieces: {reply}");
+    assert!(!reply.trim().is_empty());
+}

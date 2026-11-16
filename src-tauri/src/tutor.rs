@@ -12,14 +12,71 @@ use crate::db::{self, Track};
 use crate::llm::{self, ChatMsg, Provider, Task, Usage};
 use crate::rag::{self, Source};
 
+
+// ---------- Lenient model-output parsing ----------
+// Models sometimes return {"text": "..."} or a number where a plain string was asked for.
+
+/// Flatten any JSON value into readable text.
+pub fn loose_text(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.trim().to_string(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Array(a) => a.iter().map(loose_text).filter(|s| !s.is_empty()).collect::<Vec<_>>().join("; "),
+        Value::Object(o) => {
+            for key in ["text", "title", "objective", "description", "name", "value", "content"] {
+                if let Some(x) = o.get(key) {
+                    return loose_text(x);
+                }
+            }
+            o.values().map(loose_text).find(|s| !s.is_empty()).unwrap_or_default()
+        }
+        Value::Null => String::new(),
+    }
+}
+
+fn de_text<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<String, D::Error> {
+    Ok(loose_text(&Value::deserialize(d)?))
+}
+
+fn de_texts<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Vec<String>, D::Error> {
+    Ok(match Value::deserialize(d)? {
+        Value::Array(a) => a.iter().map(loose_text).filter(|s| !s.is_empty()).collect(),
+        Value::Null => vec![],
+        other => vec![loose_text(&other)],
+    })
+}
+
+fn de_bool<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<bool, D::Error> {
+    Ok(match Value::deserialize(d)? {
+        Value::Bool(b) => b,
+        Value::String(s) => s.eq_ignore_ascii_case("true") || s.eq_ignore_ascii_case("yes"),
+        Value::Number(n) => n.as_i64() == Some(1),
+        _ => false,
+    })
+}
+
+fn de_index<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<usize, D::Error> {
+    let v = Value::deserialize(d)?;
+    v.as_u64()
+        .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+        .map(|n| n as usize)
+        .ok_or_else(|| serde::de::Error::custom("answer is not an index"))
+}
+
 // ---------- Placement ----------
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Question {
+    #[serde(deserialize_with = "de_text")]
     pub topic: String,
+    #[serde(deserialize_with = "de_text")]
     pub prompt: String,
+    #[serde(deserialize_with = "de_texts")]
     pub options: Vec<String>,
+    #[serde(deserialize_with = "de_index")]
     pub answer: usize,
+    #[serde(default, deserialize_with = "de_text")]
     pub explanation: String,
 }
 
@@ -164,25 +221,32 @@ pub fn grade(questions: &[Question], answers: &[Option<usize>]) -> PlacementResu
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CLesson {
+    #[serde(deserialize_with = "de_text")]
     pub title: String,
+    #[serde(default, deserialize_with = "de_texts")]
     pub objectives: Vec<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CModule {
+    #[serde(deserialize_with = "de_text")]
     pub title: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_bool")]
     pub tested_out: bool,
     pub lessons: Vec<CLesson>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CPhase {
+    #[serde(deserialize_with = "de_text")]
     pub title: String,
+    #[serde(default, deserialize_with = "de_text")]
     pub goal: String,
     pub modules: Vec<CModule>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Curriculum {
+    #[serde(deserialize_with = "de_text")]
     pub title: String,
+    #[serde(default, deserialize_with = "de_text")]
     pub summary: String,
     pub phases: Vec<CPhase>,
 }
@@ -211,7 +275,9 @@ fn curriculum_schema() -> Value {
 }
 
 pub fn validate_curriculum(v: Value) -> Result<Curriculum> {
-    let mut c: Curriculum = serde_json::from_value(v).map_err(|e| anyhow!("curriculum shape was wrong: {e}"))?;
+    let raw = v.to_string();
+    let mut c: Curriculum = serde_json::from_value(v)
+        .map_err(|e| anyhow!("curriculum shape was wrong: {e}. Model output began: {}", raw.chars().take(300).collect::<String>()))?;
     for p in &mut c.phases {
         for m in &mut p.modules {
             m.lessons.retain(|l| !l.title.trim().is_empty());
@@ -566,6 +632,27 @@ mod tests {
             .map(|r| r.unwrap())
             .collect();
         assert_eq!(statuses, vec![("Syntax".into(), "skipped".into()), ("Requests".into(), "todo".into())]);
+    }
+
+    #[test]
+    fn tolerates_objects_where_strings_expected() {
+        let c = validate_curriculum(json!({
+            "title": {"text": "Backend"}, "summary": "s",
+            "phases": [{"title": "P1", "goal": {"description": "g"}, "modules": [
+                {"title": "HTTP", "tested_out": "false", "lessons": [
+                    {"title": "Requests", "objectives": [{"objective": "Read a request"}, "Send a response", 3]}
+                ]}
+            ]}]
+        }))
+        .unwrap();
+        assert_eq!(c.title, "Backend");
+        assert_eq!(c.phases[0].goal, "g");
+        assert_eq!(c.phases[0].modules[0].lessons[0].objectives, vec!["Read a request", "Send a response", "3"]);
+        let qs = validate_questions(&json!({"questions": [
+            {"topic": "t", "prompt": "p", "options": [{"text": "a"}, "b"], "answer": "1", "explanation": "x"}
+        ]}));
+        assert_eq!(qs.len(), 1);
+        assert_eq!(qs[0].options[0], "a");
     }
 
     #[test]

@@ -16,12 +16,14 @@
 
 **Decisions:**
 - Stack: Tauri 2 (Rust core) + React/TS/Vite UI; Python Kokoro sidecar later.
-- Models: test mode = Ollama (`qwen3:4b`, falls back to any installed chat model) or Gemini/Groq via `TEST_PROVIDER`. Live = Claude Haiku 5.5 tutor, Sonnet 5.5 curriculum, Opus 5.5 "ask the expert". Claude called over raw HTTPS (no Rust SDK), `anthropic-version: 2026-10-21`; no `temperature` (rejected on that version).
+- Models: test mode = `TEST_PROVIDER` groq (default) | gemini | local (Ollama). Live = Claude Haiku 5.5 tutor, Sonnet 5.5 curriculum, Opus 5.5 "ask the expert". Claude called over raw HTTPS (no Rust SDK), `anthropic-version: 2026-10-21`; no `temperature` (rejected on that version).
 - Vector search is brute-force cosine over BLOBs in SQLite (no sqlite-vec yet; fine for a few thousand chunks per track).
 - Secrets only in `.env` (gitignored). Ingestion skips `.env*`, `.flaskenv`, DBs, logs, and redacts hard-coded keys in code.
 - Design: green-ink dark theme, Newsreader (serif) for headings + tutor text, IBM Plex Sans UI, JetBrains Mono code, lamp-yellow accent. Fonts bundled via @fontsource (offline).
 - Commits carry no Claude attribution (user's global rule).
 
-**Measured on this laptop (gemma2:9b, CPU):** ingest Backend Journey 81 files/284 passages ≈ 2 min; quiz ≈ 4 min; course ≈ 8 min; one lesson turn ≈ 3 min. Local models are for testing only; real tutoring should use Claude (live mode). `qwen3:4b` download was still in progress on 2026-11-15.
+**Test mode = Groq (decided 2026-11-16).** User dropped local chat models (gemma2:9b deleted, qwen3:4b never finished; laptop hit low memory). Only `nomic-embed-text` stays local, for search. Measured: ingest ≈ 2 min (embedding); Groq `gpt-oss-120b` quiz 5 s, course 7 s, lesson turn seconds; Gemini `gemini-3.8-flash` works as backup but quiz took ~195 s. Groq free tier ≈ 8K tokens/min on gpt-oss-120b, so `llm.rs` waits and retries on 429. Models often return objects where strings were asked; `tutor.rs` parses leniently and `llm.rs` recovers Groq's `failed_generation`. Claude key not added yet (live mode untested).
+
+If the app is running, `cargo test` can't overwrite `target/debug/cprep.exe`: use `CARGO_TARGET_DIR=target-test`.
 
 **Next:** Phase 1 — Code lab (Monaco + local runner + AI grading), notes saved as `.md`.

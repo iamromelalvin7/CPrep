@@ -97,7 +97,7 @@ pub fn route(cfg: &Config, live: bool, task: Task) -> Result<Provider> {
                 name: "gemini",
                 base: GEMINI_BASE,
                 key,
-                model: std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-2.5-flash".into()),
+                model: std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-3.8-flash".into()),
             })
         }
         "groq" => {
@@ -121,6 +121,38 @@ fn client() -> reqwest::Client {
         .timeout(std::time::Duration::from_secs(600))
         .build()
         .expect("http client")
+}
+
+
+/// Send a request, waiting and retrying when the provider rate-limits (429) or is briefly overloaded (529/503).
+/// Free tiers have small per-minute token limits, so a short wait is normal.
+async fn send_retrying(build: impl Fn() -> reqwest::RequestBuilder) -> Result<reqwest::Response> {
+    let mut attempt = 0;
+    loop {
+        let resp = build().send().await?;
+        let status = resp.status().as_u16();
+        if !matches!(status, 429 | 503 | 529) || attempt >= 4 {
+            return Ok(resp);
+        }
+        attempt += 1;
+        let header_wait = resp
+            .headers()
+            .get("retry-after")
+            .and_then(|h| h.to_str().ok())
+            .and_then(|s| s.trim().parse::<f64>().ok());
+        let body = resp.text().await.unwrap_or_default();
+        let wait = header_wait.or_else(|| parse_try_again(&body)).unwrap_or(5.0 * attempt as f64).clamp(1.0, 65.0);
+        tokio::time::sleep(std::time::Duration::from_secs_f64(wait + 0.5)).await;
+    }
+}
+
+/// Pull the wait out of messages like "Please try again in 10.07s" or "in 1m2.5s".
+fn parse_try_again(body: &str) -> Option<f64> {
+    let re = regex::Regex::new(r"try again in (?:(\d+)m)?([\d.]+)(ms|s)").ok()?;
+    let c = re.captures(body)?;
+    let mins: f64 = c.get(1).and_then(|m| m.as_str().parse().ok()).unwrap_or(0.0);
+    let n: f64 = c.get(2)?.as_str().parse().ok()?;
+    Some(mins * 60.0 + if &c[3] == "ms" { n / 1000.0 } else { n })
 }
 
 async fn check(resp: reqwest::Response, who: &str) -> Result<reqwest::Response> {
@@ -182,13 +214,9 @@ impl Provider {
                     "messages": [{"role": "user", "content": user}],
                     "output_config": {"format": {"type": "json_schema", "schema": schema}},
                 });
-                let resp = client()
-                    .post(ANTHROPIC_URL)
-                    .header("x-api-key", key)
-                    .header("anthropic-version", ANTHROPIC_VERSION)
-                    .json(&body)
-                    .send()
-                    .await?;
+                let resp = send_retrying(|| {
+                    client().post(ANTHROPIC_URL).header("x-api-key", key).header("anthropic-version", ANTHROPIC_VERSION).json(&body)
+                    }).await?;
                 let v: Value = check(resp, "Claude").await?.json().await?;
                 match v["stop_reason"].as_str() {
                     Some("refusal") => bail!("Claude declined this request."),
@@ -227,30 +255,64 @@ impl Provider {
                 Ok((extract_json(text)?, usage))
             }
             Provider::OpenAiCompat { name, base, key, model } => {
+                let messages = json!([
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user}
+                ]);
+                // Groq supports constrained decoding (`strict`) on its structured-output models.
+                let mut json_schema = json!({"name": "output", "schema": schema});
+                if *name == "groq" {
+                    json_schema["strict"] = json!(true);
+                }
                 let body = json!({
                     "model": model,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user}
-                    ],
-                    "response_format": {"type": "json_schema", "json_schema": {"name": "output", "schema": schema}},
+                    "messages": messages,
+                    "response_format": {"type": "json_schema", "json_schema": json_schema},
                 });
-                let resp = client()
-                    .post(format!("{base}/chat/completions"))
-                    .bearer_auth(key)
-                    .json(&body)
-                    .send()
-                    .await?;
-                let v: Value = check(resp, name).await?.json().await?;
-                let text = v["choices"][0]["message"]["content"].as_str().unwrap_or_default();
-                let usage = Usage {
+                let url = format!("{base}/chat/completions");
+                let resp = send_retrying(|| client().post(&url).bearer_auth(key).json(&body)).await?;
+                let usage_of = |v: &Value| Usage {
                     provider: name.to_string(),
                     model: model.clone(),
                     input: v["usage"]["prompt_tokens"].as_i64().unwrap_or(0),
                     output: v["usage"]["completion_tokens"].as_i64().unwrap_or(0),
                     ..Default::default()
                 };
-                Ok((extract_json(text)?, usage))
+                if resp.status().is_success() {
+                    let v: Value = resp.json().await?;
+                    let text = v["choices"][0]["message"]["content"].as_str().unwrap_or_default();
+                    return Ok((extract_json(text)?, usage_of(&v)));
+                }
+                let status = resp.status();
+                let err_body = resp.text().await.unwrap_or_default();
+                // The provider rejected output that didn't match the schema exactly. It hands back what the
+                // model wrote; the lenient parsers downstream can usually still use it.
+                if let Ok(e) = serde_json::from_str::<Value>(&err_body) {
+                    if let Some(failed) = e["error"]["failed_generation"].as_str() {
+                        if let Ok(v) = extract_json(failed) {
+                            return Ok((v, Usage { provider: name.to_string(), model: model.clone(), ..Default::default() }));
+                        }
+                    }
+                }
+                if status != reqwest::StatusCode::BAD_REQUEST {
+                    bail!("{name} returned {status}: {}", err_body.chars().take(600).collect::<String>());
+                }
+                // Last resort: plain JSON mode with the schema spelled out in the prompt.
+                let retry = json!({
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": format!("{system}
+
+Reply with only a JSON object matching this JSON Schema:
+{schema}")},
+                        {"role": "user", "content": user}
+                    ],
+                    "response_format": {"type": "json_object"},
+                });
+                let resp = send_retrying(|| client().post(&url).bearer_auth(key).json(&retry)).await?;
+                let v: Value = check(resp, name).await?.json().await?;
+                let text = v["choices"][0]["message"]["content"].as_str().unwrap_or_default();
+                Ok((extract_json(text)?, usage_of(&v)))
             }
         }
     }
@@ -275,13 +337,9 @@ impl Provider {
                     "output_config": {"effort": "low"},
                     "messages": messages,
                 });
-                let resp = client()
-                    .post(ANTHROPIC_URL)
-                    .header("x-api-key", key)
-                    .header("anthropic-version", ANTHROPIC_VERSION)
-                    .json(&body)
-                    .send()
-                    .await?;
+                let resp = send_retrying(|| {
+                    client().post(ANTHROPIC_URL).header("x-api-key", key).header("anthropic-version", ANTHROPIC_VERSION).json(&body)
+                    }).await?;
                 let resp = check(resp, "Claude").await?;
                 let mut usage = Usage { provider: "anthropic".into(), model: model.clone(), ..Default::default() };
                 let mut stop_reason = String::new();
@@ -360,12 +418,8 @@ impl Provider {
                 let mut msgs = vec![json!({"role": "system", "content": system})];
                 msgs.extend(messages.iter().map(|m| json!({"role": m.role, "content": m.content})));
                 let body = json!({"model": model, "stream": true, "messages": msgs});
-                let resp = client()
-                    .post(format!("{base}/chat/completions"))
-                    .bearer_auth(key)
-                    .json(&body)
-                    .send()
-                    .await?;
+                let url = format!("{base}/chat/completions");
+                let resp = send_retrying(|| client().post(&url).bearer_auth(key).json(&body)).await?;
                 let resp = check(resp, name).await?;
                 let usage = Usage { provider: name.to_string(), model: model.clone(), ..Default::default() };
                 for_each_sse(resp, |data| {
@@ -492,6 +546,14 @@ mod tests {
     fn extracts_json_from_noisy_output() {
         let v = extract_json("<think>hmm</think>Sure! ```json\n{\"a\": [1,2]}\n```").unwrap();
         assert_eq!(v["a"][1], 2);
+    }
+
+    #[test]
+    fn parses_provider_wait_hints() {
+        assert_eq!(parse_try_again("Please try again in 10.07s. Need more"), Some(10.07));
+        assert_eq!(parse_try_again("try again in 1m2.5s"), Some(62.5));
+        assert_eq!(parse_try_again("try again in 250ms"), Some(0.25));
+        assert_eq!(parse_try_again("nothing here"), None);
     }
 
     #[test]
