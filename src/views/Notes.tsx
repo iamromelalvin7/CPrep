@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -187,6 +187,26 @@ function SlideView({ slide, index, total, accent }: { slide: Slide; index: numbe
 
 function Presenter({ slides, accent, onClose }: { slides: Slide[]; accent: string; onClose: () => void }) {
   const [i, setI] = useState(0);
+  const root = useRef<HTMLDivElement>(null);
+
+  // Modal focus: move focus in, keep Tab inside, and give it back to the opener on close.
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    root.current?.querySelector<HTMLElement>(".presenter-bar button:not([disabled])")?.focus();
+    const trap = (e: KeyboardEvent) => {
+      if (e.key !== "Tab" || !root.current) return;
+      const items = [...root.current.querySelectorAll<HTMLElement>("button:not([disabled])")];
+      if (!items.length) return;
+      const first = items[0], last = items[items.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    };
+    document.addEventListener("keydown", trap);
+    return () => {
+      document.removeEventListener("keydown", trap);
+      opener?.focus?.();
+    };
+  }, []);
   const go = useCallback((n: number) => setI((cur) => Math.max(0, Math.min(slides.length - 1, cur + n))), [slides.length]);
 
   useEffect(() => {
@@ -209,7 +229,7 @@ function Presenter({ slides, accent, onClose }: { slides: Slide[]; accent: strin
   }, [go, onClose, slides.length]);
 
   return createPortal(
-    <div className="presenter" role="dialog" aria-modal="true" aria-label="Slides">
+    <div className="presenter" role="dialog" aria-modal="true" aria-label="Slides" ref={root}>
       <div className="presenter-stage" onClick={(e) => (e.clientX > window.innerWidth / 2 ? go(1) : go(-1))}>
         <SlideView slide={slides[i]} index={i} total={slides.length} accent={accent} />
       </div>

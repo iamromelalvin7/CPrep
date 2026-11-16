@@ -4,7 +4,7 @@ import { api, Settings as SettingsT, TrackSummary } from "./api";
 import { Icon } from "./icons";
 import TrackHome from "./views/TrackHome";
 import LessonView from "./views/Lesson";
-import SettingsView from "./views/Settings";
+import SettingsView, { providerName } from "./views/Settings";
 import Schedule from "./views/Schedule";
 import Review from "./views/Review";
 import Today from "./views/Today";
@@ -174,7 +174,7 @@ export default function App() {
         <div className="sidebar-foot">
           <div className="mode-pill" data-live={settings?.live ?? false}>
             <span className="lamp" />
-            {settings?.live ? `Live · ${settings.tutor_model}` : `Test mode · ${settings?.test_provider === "local" ? "local model" : settings?.test_provider ?? "free"}`}
+            {settings ? (settings.live ? `Live · ${settings.tutor_model}` : `Test mode · ${providerName(settings.test_provider)}`) : " "}
           </div>
           <button
             className="track-link"

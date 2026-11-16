@@ -8,6 +8,17 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(() => ({
   plugins: [react()],
 
+  // Pre-bundle the heavy, lazily loaded editors up front so the dev server doesn't re-optimise and
+  // reload the page the first time the canvas, diagrams or code editor open.
+  optimizeDeps: {
+    include: [
+      "@excalidraw/excalidraw",
+      "@excalidraw/mermaid-to-excalidraw",
+      "mermaid",
+      "@monaco-editor/react",
+    ],
+  },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors

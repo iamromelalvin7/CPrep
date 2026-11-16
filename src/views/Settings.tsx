@@ -20,70 +20,71 @@ export default function SettingsView({ settings, onChange }: { settings: Setting
   const key = (has: boolean, name: string) =>
     has ? <span className="ok">Found</span> : <span className="faint">Not set. Add <span className="code-inline">{name}</span> to .env</span>;
 
+  const provider = providerName(s.test_provider);
+  const hasEmbed = s.ollama_models.some((m) => m.startsWith(s.ollama_embed_model));
+
   return (
     <div className="page">
       <h1 className="page-title">Settings</h1>
       <p className="page-lede">
-        Test mode runs on free local models and costs nothing. Switch to live when you want Claude to teach.
+        Test mode uses free models ({provider}) and costs nothing. Switch to live when you want Claude to teach.
       </p>
       {error && <div className="error-note" role="alert">{error}</div>}
 
       <dl className="settings-list">
-        <VoiceSettings />
         <div className="setting">
           <dt>Who teaches</dt>
           <dd>
             <div className="switch" role="group" aria-label="Teaching mode">
-              <button aria-pressed={!s.live} onClick={() => setLive(false)}>Test mode</button>
+              <button aria-pressed={!s.live} onClick={() => setLive(false)}>Test mode · {provider}</button>
               <button aria-pressed={s.live} onClick={() => setLive(true)}>Live (Claude)</button>
             </div>
             <p className="faint" style={{ marginBottom: 0 }}>
               Live uses <span className="code-inline">{s.tutor_model}</span> for lessons, <span className="code-inline">{s.curriculum_model}</span> to
-              design courses, and <span className="code-inline">{s.escalate_model}</span> when you ask the expert.
+              design courses and score interviews, and <span className="code-inline">{s.escalate_model}</span> when you ask the expert.
+              Test mode's provider is set with <span className="code-inline">TEST_PROVIDER</span> (groq, gemini or local) in .env.
             </p>
           </dd>
         </div>
 
         <div className="setting">
           <dt>Spent on Claude</dt>
-          <dd>${s.spend_usd.toFixed(2)} <span className="faint">(estimate from token counts; check your Anthropic console for the exact bill)</span></dd>
-        </div>
-
-        <div className="setting">
-          <dt>Local models</dt>
           <dd>
-            {s.ollama_up ? (
-              <>
-                <span className="ok">Ollama is running.</span>{" "}
-                <span className="faint">Installed: {s.ollama_models.join(", ") || "none"}</span>
-                {!s.ollama_models.some((m) => m.startsWith(s.ollama_chat_model)) && (
-                  <p className="faint" style={{ marginBottom: 0 }}>
-                    <span className="code-inline">{s.ollama_chat_model}</span> isn't installed yet, so test mode uses the first chat model above.
-                  </p>
-                )}
-              </>
-            ) : (
-              <span className="bad">Ollama isn't running. Start the Ollama app, then reopen this page.</span>
-            )}
+            ${s.spend_usd.toFixed(2)} <span className="faint">(estimated from token counts; the Today page breaks it down by model)</span>
           </dd>
         </div>
 
         <div className="setting">
           <dt>Canvas feedback</dt>
           <dd>
-            <span className="code-inline">{s.vision_model}</span>{" "}
-            <span className="faint">
-              (a model that can see your drawing; change it with GROQ_VISION_MODEL in .env. If it fails, feedback falls back to
-              reading your shapes and arrows as text.)
-            </span>
+            <span className="code-inline">{s.vision_model}</span>
+            <p className="faint" style={{ marginBottom: 0 }}>
+              A model that can see your drawing. Change it with <span className="code-inline">GROQ_VISION_MODEL</span>. If it fails, feedback falls
+              back to reading your shapes and arrows as text.
+            </p>
           </dd>
         </div>
 
+        <VoiceSettings />
+
         <div className="setting">
-          <dt>Test-mode provider</dt>
+          <dt>Search in your files</dt>
           <dd>
-            <span className="code-inline">{s.test_provider}</span>{" "}
-            <span className="faint">(set TEST_PROVIDER to local, gemini or groq in .env)</span>
+            {!s.ollama_up ? (
+              <span className="bad">Ollama isn't running, so CPrep can't read new folders or search them. Start the Ollama app.</span>
+            ) : hasEmbed ? (
+              <span className="ok">Ready ({s.ollama_embed_model} on Ollama)</span>
+            ) : (
+              <span className="bad">
+                Run <span className="code-inline">ollama pull {s.ollama_embed_model}</span>: CPrep needs it to search your files.
+              </span>
+            )}
+            {s.test_provider === "local" && s.ollama_up && !s.ollama_models.some((m) => m.startsWith(s.ollama_chat_model)) && (
+              <p className="faint" style={{ marginBottom: 0 }}>
+                Test mode is set to local, but <span className="code-inline">{s.ollama_chat_model}</span> isn't installed, so the first installed chat
+                model is used.
+              </p>
+            )}
           </dd>
         </div>
 
@@ -91,16 +92,28 @@ export default function SettingsView({ settings, onChange }: { settings: Setting
           <dt>API keys</dt>
           <dd>
             <div>Claude: {key(s.has_anthropic, "ANTHROPIC_API_KEY")}</div>
-            <div>Gemini: {key(s.has_gemini, "GEMINI_API_KEY")}</div>
             <div>Groq: {key(s.has_groq, "GROQ_API_KEY")}</div>
+            <div>Gemini: {key(s.has_gemini, "GEMINI_API_KEY")}</div>
             <p className="faint" style={{ marginBottom: 0 }}>
-              Keys are read from <span className="code-inline">{s.env_path ?? ".env (not found)"}</span> at startup. Restart CPrep after editing it.
+              Keys are read from <span className="code-inline">{s.env_path ?? ".env (not found)"}</span> when CPrep starts. Restart it after editing.
             </p>
+          </dd>
+        </div>
+
+        <div className="setting">
+          <dt>Notes folder</dt>
+          <dd>
+            <span className="code-inline">{s.notes_dir}</span>{" "}
+            <button className="link-btn" onClick={() => api.openNotes(null).catch((e) => setError(String(e)))}>Open</button>
           </dd>
         </div>
       </dl>
     </div>
   );
+}
+
+export function providerName(p: string) {
+  return { groq: "Groq", gemini: "Gemini", local: "local model" }[p] ?? p;
 }
 
 function VoiceSettings() {

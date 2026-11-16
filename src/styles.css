@@ -1441,3 +1441,6 @@ input[type="date"], input[type="time"] { color-scheme: dark; }
 .upcoming li { grid-template-columns: 13ch minmax(0, 1fr) auto; }
 .section-head .btn { padding: 2px 8px; margin: -2px -8px -2px 0; }
 .slide-body pre code { font-size: 0.72em; }
+.presenter { overscroll-behavior: contain; }
+.make-cards li > span { min-width: 0; overflow-wrap: anywhere; }
+.make-cards li .btn { white-space: nowrap; flex-shrink: 0; }
