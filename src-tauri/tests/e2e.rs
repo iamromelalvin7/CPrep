@@ -129,3 +129,85 @@ async fn gemini_smoke() {
     println!("STREAM {pieces} pieces: {reply}");
     assert!(!reply.trim().is_empty());
 }
+
+/// Code lab against the configured test provider: generate an exercise, grade the starter code,
+/// stream a review, and write study notes. No folder ingest needed.
+/// Run with: cargo test --test e2e lab_flow -- --ignored --nocapture
+#[tokio::test]
+#[ignore]
+async fn lab_flow() {
+    let cfg = Config::load();
+    let tmp = std::env::temp_dir().join(format!("cprep-lab-{}.db", uuid::Uuid::new_v4()));
+    let db = Mutex::new(db::open(&tmp).unwrap());
+    let track = db::track("backend").unwrap();
+    let c = tutor::validate_curriculum(serde_json::json!({
+        "title": "Backend", "summary": "s",
+        "phases": [{"title": "Core Python", "goal": "g", "modules": [{"title": "Data handling", "tested_out": false, "lessons": [
+            {"title": "Lists and dictionaries", "objectives": ["List comprehensions", "Dictionary lookups", "Counting with dicts"]}
+        ]}]}]
+    }))
+    .unwrap();
+    let cid = tutor::save_curriculum(&db.lock().unwrap(), "backend", &c).unwrap();
+    let lesson_id: i64 = db.lock().unwrap().query_row("SELECT id FROM lessons WHERE curriculum_id = ?1", [cid], |r| r.get(0)).unwrap();
+    let provider = llm::route(&cfg, false, llm::Task::Quiz).unwrap();
+    println!("PROVIDER {}", provider.label());
+    // Pre-existing usage rows make the exercise id differ from the usage row id (regression guard).
+    db.lock().unwrap().execute_batch("INSERT INTO usage (provider, model, input_tokens, output_tokens, cache_read, cache_write, cost_usd, created_at) VALUES ('x','x',0,0,0,0,0,'now'), ('x','x',0,0,0,0,0,'now');").unwrap();
+
+    let t0 = Instant::now();
+    let (id, _) = cprep_lib::lab::generate(&cfg, &db, &provider, track, lesson_id).await.unwrap();
+    let (_, ex) = cprep_lib::lab::load(&db.lock().unwrap(), id).unwrap();
+    assert_eq!(cprep_lib::lab::view(&db.lock().unwrap(), id).unwrap().title, ex.title);
+    println!("EXERCISE in {:.0?}: {} [{:?}/{:?}] fn={}\n{}\nSTARTER:\n{}", t0.elapsed(), ex.title, ex.language, ex.kind, ex.function_name, ex.prompt, ex.starter_code);
+    for t in &ex.tests {
+        println!("  TEST hidden={} args={:?} expected={} stdin={:?} out={:?}", t.hidden, t.args, t.expected, t.stdin, t.expected_output);
+    }
+
+    let grade = cprep_lib::runner::grade(&ex.language, &ex.kind, &ex.starter_code, &ex.function_name, &ex.setup_sql, ex.ordered, &ex.tests)
+        .await
+        .unwrap();
+    println!("STARTER GRADE {}/{} error={:?}", grade.passed, grade.total, grade.error);
+    assert!(grade.passed < grade.total, "the starter stub must not already pass");
+
+    assert!(cprep_lib::lab::is_untouched(&ex, &ex.starter_code));
+    // Review a realistic wrong attempt: squares every number instead of only the even ones.
+    let header = ex.starter_code.lines().next().unwrap_or_default().to_string();
+    let wrong = if ex.language == cprep_lib::runner::Language::Python && header.starts_with("def ") {
+        let arg = header.split('(').nth(1).and_then(|a| a.split(&[',', ')'][..]).next()).unwrap_or("nums").trim().to_string();
+        format!("{header}\n    return [x * x for x in {arg}]\n")
+    } else {
+        ex.starter_code.clone()
+    };
+    let grade = cprep_lib::runner::grade(&ex.language, &ex.kind, &wrong, &ex.function_name, &ex.setup_sql, ex.ordered, &ex.tests)
+        .await
+        .unwrap();
+    println!("WRONG ATTEMPT GRADE {}/{}:\n{wrong}", grade.passed, grade.total);
+    let (system, user) = cprep_lib::lab::feedback_prompt(&ex, &wrong, &grade, 1);
+    let (review, _) = provider.stream_chat(&system, &[llm::ChatMsg { role: "user".into(), content: user }], |_| {}).await.unwrap();
+    println!("REVIEW:\n{review}");
+    assert!(!review.trim().is_empty());
+
+    {
+        let conn = db.lock().unwrap();
+        for (role, text) in [
+            ("assistant", "A list comprehension builds a list in one line: `[x * 2 for x in nums if x > 0]`. Check: what does `[c for c in 'abc']` give?"),
+            ("user", "['a', 'b', 'c']"),
+            ("assistant", "Correct. Dictionaries map keys to values; `d.get(k, 0)` avoids a KeyError. Counting: `counts[w] = counts.get(w, 0) + 1`."),
+        ] {
+            conn.execute(
+                "INSERT INTO messages (lesson_id, role, content, llm_content, created_at) VALUES (?1, ?2, ?3, ?3, 'now')",
+                rusqlite::params![lesson_id, role, text],
+            )
+            .unwrap();
+        }
+    }
+    // SAFETY: set before any other thread reads NOTES_DIR in this test process.
+    unsafe { std::env::set_var("NOTES_DIR", std::env::temp_dir().join("cprep-notes-test")) };
+    let (path, _) = cprep_lib::lab::write_notes(&db, &provider, track, lesson_id).await.unwrap();
+    let notes = std::fs::read_to_string(&path).unwrap();
+    println!("NOTES at {}:\n{}", path.display(), notes.chars().take(900).collect::<String>());
+    assert!(notes.starts_with("# Lists and dictionaries"));
+
+    drop(db);
+    let _ = std::fs::remove_file(&tmp);
+}

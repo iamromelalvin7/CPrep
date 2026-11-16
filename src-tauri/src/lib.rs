@@ -3,8 +3,10 @@
 pub mod config;
 pub mod db;
 pub mod ingest;
+pub mod lab;
 pub mod llm;
 pub mod rag;
+pub mod runner;
 pub mod tutor;
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -104,6 +106,7 @@ struct Settings {
     ollama_chat_model: String,
     ollama_embed_model: String,
     ollama_up: bool,
+    notes_dir: String,
     ollama_models: Vec<String>,
     spend_usd: f64,
 }
@@ -131,6 +134,7 @@ async fn get_settings(state: State<'_, AppState>) -> CmdResult<Settings> {
         ollama_chat_model: cfg.ollama_chat_model.clone(),
         ollama_embed_model: cfg.ollama_embed_model.clone(),
         ollama_up: models.is_ok(),
+        notes_dir: lab::notes_dir().to_string_lossy().to_string(),
         ollama_models: models.unwrap_or_default(),
         spend_usd: spend,
     })
@@ -444,6 +448,134 @@ async fn send_message(
     Ok(())
 }
 
+// ---------- Code lab ----------
+
+#[derive(Clone, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum LabEvent {
+    Graded { grade: runner::Grade },
+    Delta { text: String },
+    Done { attempt_id: i64, provider: String, cost_usd: f64 },
+    Error { message: String },
+}
+
+fn lesson_track(state: &AppState, lesson_id: i64) -> CmdResult<&'static db::Track> {
+    let track_id: String = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT c.track_id FROM lessons l JOIN curricula c ON c.id = l.curriculum_id WHERE l.id = ?1",
+            [lesson_id],
+            |r| r.get(0),
+        )
+        .map_err(err)?;
+    track(&track_id)
+}
+
+#[tauri::command]
+fn list_exercises(state: State<'_, AppState>, lesson_id: i64) -> CmdResult<Vec<lab::ExerciseView>> {
+    lab::list(&state.db.lock().unwrap(), lesson_id).map_err(err)
+}
+
+#[tauri::command]
+async fn new_exercise(state: State<'_, AppState>, lesson_id: i64) -> CmdResult<lab::ExerciseView> {
+    let t = lesson_track(&state, lesson_id)?;
+    let provider = llm::route(&state.cfg, state.live.load(Ordering::Relaxed), Task::Quiz).map_err(err)?;
+    let (id, _) = lab::generate(&state.cfg, &state.db, &provider, t, lesson_id).await.map_err(err)?;
+    lab::view(&state.db.lock().unwrap(), id).map_err(err)
+}
+
+#[tauri::command]
+async fn run_code(state: State<'_, AppState>, exercise_id: i64, code: String, stdin: String) -> CmdResult<runner::RunOutput> {
+    let (_, ex) = {
+        let conn = state.db.lock().unwrap();
+        lab::save_draft(&conn, exercise_id, &code).map_err(err)?;
+        lab::load(&conn, exercise_id).map_err(err)?
+    };
+    runner::run(&ex.language, &code, &stdin, &ex.setup_sql).await.map_err(err)
+}
+
+#[tauri::command]
+fn save_draft(state: State<'_, AppState>, exercise_id: i64, code: String) -> CmdResult<()> {
+    lab::save_draft(&state.db.lock().unwrap(), exercise_id, &code).map_err(err)
+}
+
+/// Grade the code locally, then stream the tutor's review.
+#[tauri::command]
+async fn submit_code(state: State<'_, AppState>, exercise_id: i64, code: String, on_event: Channel<LabEvent>) -> CmdResult<()> {
+    let (lesson_id, ex, attempt_no) = {
+        let conn = state.db.lock().unwrap();
+        lab::save_draft(&conn, exercise_id, &code).map_err(err)?;
+        let (lesson_id, ex) = lab::load(&conn, exercise_id).map_err(err)?;
+        let n = lab::attempt_count(&conn, exercise_id).map_err(err)? + 1;
+        (lesson_id, ex, n)
+    };
+    let grade = runner::grade(&ex.language, &ex.kind, &code, &ex.function_name, &ex.setup_sql, ex.ordered, &ex.tests)
+        .await
+        .map_err(err)?;
+    let _ = on_event.send(LabEvent::Graded { grade: grade.clone() });
+
+    let _ = lesson_track(&state, lesson_id)?;
+    if lab::is_untouched(&ex, &code) {
+        let _ = on_event.send(LabEvent::Delta { text: lab::UNTOUCHED_REVIEW.into() });
+        let conn = state.db.lock().unwrap();
+        let id = lab::record_attempt(&conn, exercise_id, &code, &grade, lab::UNTOUCHED_REVIEW).map_err(err)?;
+        let _ = on_event.send(LabEvent::Done { attempt_id: id, provider: "CPrep".into(), cost_usd: 0.0 });
+        return Ok(());
+    }
+    let provider = llm::route(&state.cfg, state.live.load(Ordering::Relaxed), Task::Tutor).map_err(err)?;
+    let (system, user) = lab::feedback_prompt(&ex, &code, &grade, attempt_no);
+    let result = provider
+        .stream_chat(&system, &[llm::ChatMsg { role: "user".into(), content: user }], |t| {
+            let _ = on_event.send(LabEvent::Delta { text: t.to_string() });
+        })
+        .await;
+    // The grade counts even if the review fails (e.g. offline).
+    let (feedback, usage) = match result {
+        Ok(x) => x,
+        Err(e) => {
+            let conn = state.db.lock().unwrap();
+            let id = lab::record_attempt(&conn, exercise_id, &code, &grade, "").map_err(err)?;
+            let _ = on_event.send(LabEvent::Error { message: format!("Graded, but the review failed: {e}") });
+            let _ = on_event.send(LabEvent::Done { attempt_id: id, provider: provider.label(), cost_usd: 0.0 });
+            return Ok(());
+        }
+    };
+    let conn = state.db.lock().unwrap();
+    db::record_usage(&conn, &usage).map_err(err)?;
+    let id = lab::record_attempt(&conn, exercise_id, &code, &grade, &feedback).map_err(err)?;
+    let _ = on_event.send(LabEvent::Done { attempt_id: id, provider: provider.label_for(&usage), cost_usd: usage.cost_usd() });
+    Ok(())
+}
+
+#[tauri::command]
+async fn write_notes(state: State<'_, AppState>, lesson_id: i64) -> CmdResult<String> {
+    let t = lesson_track(&state, lesson_id)?;
+    let provider = llm::route(&state.cfg, state.live.load(Ordering::Relaxed), Task::Tutor).map_err(err)?;
+    let (path, _) = lab::write_notes(&state.db, &provider, t, lesson_id).await.map_err(err)?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn notes_path(state: State<'_, AppState>, lesson_id: i64) -> CmdResult<Option<String>> {
+    lab::notes_path(&state.db.lock().unwrap(), lesson_id).map_err(err)
+}
+
+/// Open a notes file (or the notes folder) in the default app. Only paths inside the notes folder.
+#[tauri::command]
+fn open_notes(path: Option<String>) -> CmdResult<()> {
+    let root = lab::notes_dir();
+    std::fs::create_dir_all(&root).map_err(err)?;
+    let target = path.map(PathBuf::from).unwrap_or_else(|| root.clone());
+    let canon_root = root.canonicalize().map_err(err)?;
+    let canon = target.canonicalize().map_err(err)?;
+    if !canon.starts_with(&canon_root) {
+        return Err("Only files in your notes folder can be opened from here.".into());
+    }
+    tauri_plugin_opener::open_path(canon, None::<&str>).map_err(err)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -479,6 +611,14 @@ pub fn run() {
             set_lesson_status,
             retake_lesson,
             send_message,
+            list_exercises,
+            new_exercise,
+            run_code,
+            save_draft,
+            submit_code,
+            write_notes,
+            notes_path,
+            open_notes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

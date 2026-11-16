@@ -28,6 +28,7 @@ export type Settings = {
   ollama_chat_model: string;
   ollama_embed_model: string;
   ollama_up: boolean;
+  notes_dir: string;
   ollama_models: string[];
   spend_usd: number;
 };
@@ -86,6 +87,42 @@ export type ChatEvent =
   | { type: "done"; messageId: number; provider: string; costUsd: number; topicIdx: number }
   | { type: "error"; message: string };
 
+export type LabLanguage = "python" | "javascript" | "sql" | "java";
+export type LabKind = "function" | "output" | "query";
+export type TestCase = { args: unknown[]; expected: unknown; stdin: string; expected_output: string; hidden: boolean };
+export type Exercise = {
+  id: number;
+  lesson_id: number;
+  topic_idx: number;
+  title: string;
+  prompt: string;
+  language: LabLanguage;
+  kind: LabKind;
+  function_name: string;
+  starter_code: string;
+  setup_sql: string;
+  draft: string | null;
+  examples: TestCase[];
+  hidden_count: number;
+  best: [number, number] | null;
+  attempts: number;
+};
+export type RunOutput = { stdout: string; stderr: string; exit_code: number | null; timed_out: boolean; millis: number };
+export type TestResult = {
+  passed: boolean;
+  hidden: boolean;
+  input: string | null;
+  expected: string | null;
+  got: string | null;
+  error: string | null;
+};
+export type Grade = { passed: number; total: number; results: TestResult[]; error: string | null; stdout: string };
+export type LabEvent =
+  | { type: "graded"; grade: Grade }
+  | { type: "delta"; text: string }
+  | { type: "done"; attemptId: number; provider: string; costUsd: number }
+  | { type: "error"; message: string };
+
 export const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -116,6 +153,19 @@ export const api = {
     ch.onmessage = onEvent;
     await tauriInvoke("send_message", { lessonId, text, escalate, onEvent: ch });
   },
+  listExercises: (lessonId: number) => call<Exercise[]>("list_exercises", { lessonId }),
+  newExercise: (lessonId: number) => call<Exercise>("new_exercise", { lessonId }),
+  runCode: (exerciseId: number, code: string, stdin: string) => call<RunOutput>("run_code", { exerciseId, code, stdin }),
+  saveDraft: (exerciseId: number, code: string) => call<void>("save_draft", { exerciseId, code }),
+  submitCode: async (exerciseId: number, code: string, onEvent: (e: LabEvent) => void) => {
+    if (!inTauri) return mockSubmit(code, onEvent);
+    const ch = new Channel<LabEvent>();
+    ch.onmessage = onEvent;
+    await tauriInvoke("submit_code", { exerciseId, code, onEvent: ch });
+  },
+  writeNotes: (lessonId: number) => call<string>("write_notes", { lessonId }),
+  notesPath: (lessonId: number) => call<string | null>("notes_path", { lessonId }),
+  openNotes: (path: string | null) => call<void>("open_notes", { path }),
   pickFolder: async (): Promise<string | null> => {
     if (!inTauri) return "C:\\Users\\you\\Desktop\\programming\\BACKEND JOURNEY";
     const { open } = await import("@tauri-apps/plugin-dialog");
@@ -254,6 +304,11 @@ let mockMessages: Message[] = [
 
 async function mock<T>(cmd: string, args: Record<string, unknown>): Promise<T> {
   await new Promise((r) => setTimeout(r, 120));
+  if (cmd === "new_exercise") {
+    const ex = { ...mockExercise, id: mockExercises.length + 1, title: "Count words" };
+    mockExercises = [...mockExercises, ex];
+    return ex as T;
+  }
   const curriculum = mockCurriculum();
   const out: Record<string, unknown> = {
     list_tracks: sampleTracks,
@@ -270,6 +325,7 @@ async function mock<T>(cmd: string, args: Record<string, unknown>): Promise<T> {
       ollama_chat_model: "qwen3:4b",
       ollama_embed_model: "nomic-embed-text",
       ollama_up: true,
+      notes_dir: "C:\\Users\\you\\Documents\\CPrep Notes",
       ollama_models: ["gemma2:9b", "nomic-embed-text:latest"],
       spend_usd: 0,
     } satisfies Settings,
@@ -302,10 +358,72 @@ async function mock<T>(cmd: string, args: Record<string, unknown>): Promise<T> {
       { topic: "Flask routing", prompt: "What does `@app.route('/users/<int:id>')` pass to the view function?", options: ["The string \"id\"", "An integer named id", "The whole request", "Nothing; you read it from request.args"] },
       { topic: "HTTP methods", prompt: "Which method should create a new resource in a REST API?", options: ["GET", "POST", "PUT", "DELETE"] },
     ] satisfies Question[],
+    list_exercises: mockExercises,
+    run_code: {
+      stdout: "[4, 16, 36]\n",
+      stderr: "",
+      exit_code: 0,
+      timed_out: false,
+      millis: 41,
+    } satisfies RunOutput,
+    write_notes: "C:\\Users\\you\\Documents\\CPrep Notes\\Backend Engineering\\06 Routes and views.md",
+    notes_path: null,
     submit_placement: { correct: 1, total: 2, topics: [], strong: [], weak: [], review: [] },
   };
   if (cmd === "retake_lesson") mockMessages = [];
   return (out[cmd] ?? null) as T;
+}
+
+const mockExercise: Exercise = {
+  id: 1,
+  lesson_id: 6,
+  topic_idx: 1,
+  title: "Even squares",
+  prompt:
+    "Write `even_squares(nums)` that returns the squares of the **even** numbers in `nums`, in their original order. Use a list comprehension.\n\nExample: `even_squares([1, 2, 3, 4])` returns `[4, 16]`.",
+  language: "python",
+  kind: "function",
+  function_name: "even_squares",
+  starter_code: "def even_squares(nums):\n    # TODO: use a list comprehension\n    pass\n",
+  setup_sql: "",
+  draft: null,
+  examples: [
+    { args: [[1, 2, 3, 4]], expected: [4, 16], stdin: "", expected_output: "", hidden: false },
+    { args: [[]], expected: [], stdin: "", expected_output: "", hidden: false },
+    { args: [[-2, 0, 3]], expected: [4, 0], stdin: "", expected_output: "", hidden: false },
+  ],
+  hidden_count: 2,
+  best: null,
+  attempts: 0,
+};
+let mockExercises: Exercise[] = [mockExercise];
+
+async function mockSubmit(code: string, onEvent: (e: LabEvent) => void) {
+  const right = /%\s*2\s*==\s*0/.test(code);
+  onEvent({
+    type: "graded",
+    grade: {
+      passed: right ? 5 : 1,
+      total: 5,
+      error: null,
+      stdout: "",
+      results: [
+        { passed: right, hidden: false, input: "[1, 2, 3, 4]", expected: "[4,16]", got: right ? "[4,16]" : "[1,4,9,16]", error: null },
+        { passed: true, hidden: false, input: "[]", expected: "[]", got: "[]", error: null },
+        { passed: right, hidden: false, input: "[-2, 0, 3]", expected: "[4,0]", got: right ? "[4,0]" : "[4,0,9]", error: null },
+        { passed: right, hidden: true, input: null, expected: null, got: null, error: null },
+        { passed: right, hidden: true, input: null, expected: null, got: null, error: null },
+      ],
+    },
+  });
+  const review = right
+    ? "**All tests pass.** Clean, single comprehension. One improvement: name the loop variable `n` to match `nums`."
+    : "**Not yet:** odd numbers are getting squared too.\n\nYour comprehension has no filter, so every `x` in `nums` is kept. A comprehension can end with an `if` clause that decides which items stay. How do you test whether a number is even?";
+  for (const w of review.split(/(\s+)/)) {
+    await new Promise((r) => setTimeout(r, 6));
+    onEvent({ type: "delta", text: w });
+  }
+  onEvent({ type: "done", attemptId: Date.now(), provider: "Mock · browser", costUsd: 0 });
 }
 
 async function mockChat(text: string, onEvent: (e: ChatEvent) => void) {

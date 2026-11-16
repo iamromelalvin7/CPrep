@@ -1,10 +1,13 @@
-import { KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
+import { KeyboardEvent, Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api, LessonView as LessonViewT, Message, Source, TrackSummary } from "../api";
 import { Icon, MdIcon, remarkEmojiIcons } from "../icons";
 import { LessonProgress, topicStates } from "./CourseNav";
+
+const Lab = lazy(() => import("./Lab"));
+const LAB_KEY = "cprep.lab";
 
 type Props = {
   track: TrackSummary;
@@ -34,6 +37,16 @@ export default function LessonView({ track, lessonId, live, onBack, onOpenLesson
   const [escalate, setEscalate] = useState(false);
   const [lastMeta, setLastMeta] = useState<string | null>(null);
   const [celebrating, setCelebrating] = useState(false);
+  const [labOpen, setLabOpen] = useState(() => {
+    try {
+      return localStorage.getItem(LAB_KEY) === "open";
+    } catch {
+      return false;
+    }
+  });
+  const [notesPath, setNotesPath] = useState<string | null>(null);
+  const [notesBusy, setNotesBusy] = useState(false);
+  const [notesMsg, setNotesMsg] = useState<string | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const started = useRef(false);
   const leaveOnTab = useRef(false);
@@ -73,6 +86,8 @@ export default function LessonView({ track, lessonId, live, onBack, onOpenLesson
     started.current = false;
     setView(null);
     setLastMeta(null);
+    setNotesMsg(null);
+    api.notesPath(lessonId).then(setNotesPath).catch(() => setNotesPath(null));
     load().then((v) => {
       if (v.messages.length === 0 && !started.current) {
         started.current = true;
@@ -137,9 +152,34 @@ export default function LessonView({ track, lessonId, live, onBack, onOpenLesson
     }
   };
 
+  const toggleLab = (open: boolean) => {
+    setLabOpen(open);
+    try {
+      localStorage.setItem(LAB_KEY, open ? "open" : "closed");
+    } catch {
+      /* storage unavailable */
+    }
+  };
+
+  const writeNotes = async () => {
+    setNotesBusy(true);
+    setNotesMsg(null);
+    try {
+      const path = await api.writeNotes(lesson.id);
+      setNotesPath(path);
+      setNotesMsg(`Notes saved to ${path}`);
+    } catch (e) {
+      setNotesMsg(String(e));
+    } finally {
+      setNotesBusy(false);
+    }
+  };
+
   const markDone = async () => {
     await api.setLessonStatus(lesson.id, "done");
     onChanged();
+    // Notes are written in the background; they'll be ready in the notes folder.
+    api.writeNotes(lesson.id).catch(() => {});
     setCelebrating(true);
   };
 
@@ -183,12 +223,44 @@ export default function LessonView({ track, lessonId, live, onBack, onOpenLesson
             Previous
           </button>
           <button className="btn btn-quiet" disabled={!!pending} onClick={retake}>Retake</button>
+          <button
+            className="btn btn-quiet"
+            disabled={notesBusy || !!pending}
+            onClick={() => (notesPath ? api.openNotes(notesPath).catch((e) => setNotesMsg(String(e))) : writeNotes())}
+          >
+            {notesBusy ? <span className="spinner" /> : <Icon name="notes" size={15} />}
+            {notesBusy ? "Writing notes…" : notesPath ? "Open notes" : "Write notes"}
+          </button>
+          <button className="btn btn-quiet" aria-pressed={labOpen} onClick={() => toggleLab(!labOpen)}>
+            <Icon name="code" size={15} />
+            Practice
+          </button>
           <button className="btn" disabled={!!pending || lesson.status === "done"} onClick={markDone}>
             {lesson.status === "done" ? "Completed" : "Mark complete"}
           </button>
         </div>
       </header>
 
+      {notesMsg && (
+        <div className="notes-strip" role="status">
+          <span>{notesMsg}</span>
+          {notesPath && (
+            <>
+              <button className="btn btn-quiet" onClick={() => api.openNotes(notesPath)}>Open</button>
+              <button className="btn btn-quiet" onClick={() => api.openNotes(null)}>Show folder</button>
+              <button className="btn btn-quiet" disabled={notesBusy} onClick={writeNotes}>
+                <Icon name="refresh" size={14} /> Rewrite
+              </button>
+            </>
+          )}
+          <button className="icon-btn" aria-label="Dismiss" onClick={() => setNotesMsg(null)}>
+            <Icon name="close" size={14} />
+          </button>
+        </div>
+      )}
+
+      <div className="lesson-body" data-lab={labOpen}>
+      <div className="lesson-chat">
       <div className="lesson-scroll" ref={scroller}>
         <section className="lesson-intro">
           <div>
@@ -271,6 +343,13 @@ export default function LessonView({ track, lessonId, live, onBack, onOpenLesson
           </div>
         </div>
       </footer>
+      </div>
+      {labOpen && (
+        <Suspense fallback={<aside className="lab"><span className="spinner" aria-label="Loading practice" /></aside>}>
+          <Lab lessonId={lesson.id} topic={lesson.objectives[currentTopic] ?? lesson.title} onClose={() => toggleLab(false)} />
+        </Suspense>
+      )}
+      </div>
 
       <AnimatePresence>
         {celebrating && <Celebration title={lesson.title} hasNext={!!view.next_id} onDone={afterCelebration} />}

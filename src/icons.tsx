@@ -15,7 +15,12 @@ type IconName =
   | "lock"
   | "chevron"
   | "sidebar"
-  | "back";
+  | "back"
+  | "code"
+  | "play"
+  | "close"
+  | "refresh"
+  | "notes";
 
 const paths: Record<IconName, ReactElement> = {
   check: <path d="M3.5 8.5l3 3 6-7" />,
@@ -74,6 +79,21 @@ const paths: Record<IconName, ReactElement> = {
     </>
   ),
   back: <path d="M10 3L5 8l5 5" />,
+  code: <path d="M5.5 4.5L2 8l3.5 3.5M10.5 4.5L14 8l-3.5 3.5M9 3l-2 10" />,
+  play: <path d="M5 3.5v9l7-4.5z" />,
+  close: <path d="M4 4l8 8M12 4l-8 8" />,
+  refresh: (
+    <>
+      <path d="M13 8a5 5 0 1 1-1.5-3.6" />
+      <path d="M13 2.8v2.6h-2.6" />
+    </>
+  ),
+  notes: (
+    <>
+      <path d="M4 2.5h6l2.5 2.5v8.5H4z" />
+      <path d="M6.2 7.5h4M6.2 10h4M9.8 2.5V5h2.7" />
+    </>
+  ),
 };
 
 export type { IconName };

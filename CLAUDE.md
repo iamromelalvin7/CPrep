@@ -2,7 +2,7 @@
 
 **Goal:** Personal local-first AI tutor desktop app for career prep (backend, AI eng, networking, AI automation, DSA, system design, interviews). Full design: `PLAN.md`.
 
-**Current state (2026-11-15):** Phase 0 built: Tauri 2 app with folder ingestion + RAG, LLM router (Claude / Ollama / Gemini / Groq), placement quiz, curriculum design, streaming lesson chat with margin citations, settings. Phases 1–5 (code lab, canvas, scheduler/notifications, voice, slides/dashboard) not started.
+**Current state (2026-11-15):** Phase 0 built: Tauri 2 app with folder ingestion + RAG, LLM router (Claude / Ollama / Gemini / Groq), placement quiz, curriculum design, streaming lesson chat with margin citations, settings. Phase 1 (code lab + study notes) built 2026-11-16. Phases 2–5 (canvas, scheduler/notifications, voice, slides/dashboard) not started.
 
 **Run it:**
 - `npm run tauri dev` (Vite on port **1420**, not 5173).
@@ -28,4 +28,6 @@ If the app is running, `cargo test` can't overwrite `target/debug/cprep.exe`: us
 
 **Lesson topics (2026-11-16):** a lesson's `objectives` are its ordered topics. The tutor starts every reply with `[[topic:N]]` (1-based); `tutor::parse_topic` strips it and stores 0-based `messages.topic_idx`, and `lessons.topic_idx` only moves forward. The user turn carries `<lesson_state>` so the system prompt stays cacheable. In a lesson the sidebar becomes `CourseNav` (topics: done=jump back, current, locked). The sidebar collapses (localStorage `cprep.sidebar`). No emoji: the prompt forbids them and `icons.tsx` swaps any that slip through for SVGs. Tab in the reply box indents; Esc then Tab leaves.
 
-**Next:** Phase 1 — Code lab (Monaco + local runner + AI grading), notes saved as `.md`.
+**Code lab (Phase 1, 2026-11-16):** `runner.rs` runs ONLY the learner's code (Python via `py -3`, Node, `java File.java`, SQL in in-memory rusqlite with a progress-handler timeout), 10 s limit. AI exercises are data: function tests (`args`/`expected`), output tests (stdin/stdout), query tests (rows), fed through fixed harnesses (`PY_HARNESS`, `JS_HARNESS`). Never execute model-written code. `lab.rs`: exercise generation (strict JSON; tests arrive as JSON strings), review prompt (hints only before attempt 3; the rule is appended next to the code), unchanged-starter short-circuit (no model call), notes written to `Documents/CPrep Notes/<track>/NN <lesson>.md` (override with `NOTES_DIR`). UI: `views/Lab.tsx`, lazy-loaded; Monaco set up in `src/monaco.ts` (core + 4 languages, offline). Ctrl+Enter runs, Ctrl+Shift+Enter submits. Mark complete also writes notes in the background. Read `last_insert_rowid()` before any other insert (usage rows) — that bug shipped once.
+
+**Next:** Phase 2 — canvas (Excalidraw + Mermaid), tutor drawing tools, diagram critique.

@@ -164,6 +164,30 @@ pub fn init(conn: &Connection) -> Result<()> {
             sources TEXT,
             created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS exercises (
+            id INTEGER PRIMARY KEY,
+            lesson_id INTEGER NOT NULL REFERENCES lessons(id) ON DELETE CASCADE,
+            topic_idx INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL,
+            draft TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS attempts (
+            id INTEGER PRIMARY KEY,
+            exercise_id INTEGER NOT NULL REFERENCES exercises(id) ON DELETE CASCADE,
+            code TEXT NOT NULL,
+            passed INTEGER NOT NULL,
+            total INTEGER NOT NULL,
+            grade TEXT NOT NULL,
+            feedback TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS notes (
+            lesson_id INTEGER PRIMARY KEY REFERENCES lessons(id) ON DELETE CASCADE,
+            path TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
