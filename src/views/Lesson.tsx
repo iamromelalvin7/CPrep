@@ -5,9 +5,12 @@ import remarkGfm from "remark-gfm";
 import { api, LessonView as LessonViewT, Message, Source, TrackSummary } from "../api";
 import { Icon, MdIcon, remarkEmojiIcons } from "../icons";
 import { LessonProgress, topicStates } from "./CourseNav";
+import { CanvasBridge, Diagram } from "./Diagram";
 
 const Lab = lazy(() => import("./Lab"));
-const LAB_KEY = "cprep.lab";
+const Canvas = lazy(() => import("./Canvas"));
+const PANEL_KEY = "cprep.panel";
+type Panel = "practice" | "canvas" | null;
 
 type Props = {
   track: TrackSummary;
@@ -37,17 +40,20 @@ export default function LessonView({ track, lessonId, live, onBack, onOpenLesson
   const [escalate, setEscalate] = useState(false);
   const [lastMeta, setLastMeta] = useState<string | null>(null);
   const [celebrating, setCelebrating] = useState(false);
-  const [labOpen, setLabOpen] = useState(() => {
+  const [panel, setPanelState] = useState<Panel>(() => {
     try {
-      return localStorage.getItem(LAB_KEY) === "open";
+      const v = localStorage.getItem(PANEL_KEY);
+      return v === "practice" || v === "canvas" ? v : null;
     } catch {
-      return false;
+      return null;
     }
   });
+  const [pendingMermaid, setPendingMermaid] = useState<string | null>(null);
   const [notesPath, setNotesPath] = useState<string | null>(null);
   const [notesBusy, setNotesBusy] = useState(false);
   const [notesMsg, setNotesMsg] = useState<string | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
+  const clearPendingMermaid = useCallback(() => setPendingMermaid(null), []);
   const started = useRef(false);
   const leaveOnTab = useRef(false);
 
@@ -152,13 +158,17 @@ export default function LessonView({ track, lessonId, live, onBack, onOpenLesson
     }
   };
 
-  const toggleLab = (open: boolean) => {
-    setLabOpen(open);
+  const setPanel = (next: Panel) => {
+    setPanelState(next);
     try {
-      localStorage.setItem(LAB_KEY, open ? "open" : "closed");
+      localStorage.setItem(PANEL_KEY, next ?? "none");
     } catch {
       /* storage unavailable */
     }
+  };
+  const openOnCanvas = (code: string) => {
+    setPendingMermaid(code);
+    setPanel("canvas");
   };
 
   const writeNotes = async () => {
@@ -231,9 +241,13 @@ export default function LessonView({ track, lessonId, live, onBack, onOpenLesson
             {notesBusy ? <span className="spinner" /> : <Icon name="notes" size={15} />}
             {notesBusy ? "Writing notes…" : notesPath ? "Open notes" : "Write notes"}
           </button>
-          <button className="btn btn-quiet" aria-pressed={labOpen} onClick={() => toggleLab(!labOpen)}>
+          <button className="btn btn-quiet" aria-pressed={panel === "practice"} onClick={() => setPanel(panel === "practice" ? null : "practice")}>
             <Icon name="code" size={15} />
             Practice
+          </button>
+          <button className="btn btn-quiet" aria-pressed={panel === "canvas"} onClick={() => setPanel(panel === "canvas" ? null : "canvas")}>
+            <Icon name="canvas" size={15} />
+            Canvas
           </button>
           <button className="btn" disabled={!!pending || lesson.status === "done"} onClick={markDone}>
             {lesson.status === "done" ? "Completed" : "Mark complete"}
@@ -259,7 +273,8 @@ export default function LessonView({ track, lessonId, live, onBack, onOpenLesson
         </div>
       )}
 
-      <div className="lesson-body" data-lab={labOpen}>
+      <CanvasBridge.Provider value={openOnCanvas}>
+      <div className="lesson-body" data-lab={panel !== null} data-panel={panel ?? "none"}>
       <div className="lesson-chat">
       <div className="lesson-scroll" ref={scroller}>
         <section className="lesson-intro">
@@ -344,12 +359,23 @@ export default function LessonView({ track, lessonId, live, onBack, onOpenLesson
         </div>
       </footer>
       </div>
-      {labOpen && (
+      {panel === "practice" && (
         <Suspense fallback={<aside className="lab"><span className="spinner" aria-label="Loading practice" /></aside>}>
-          <Lab lessonId={lesson.id} topic={lesson.objectives[currentTopic] ?? lesson.title} onClose={() => toggleLab(false)} />
+          <Lab lessonId={lesson.id} topic={lesson.objectives[currentTopic] ?? lesson.title} onClose={() => setPanel(null)} />
+        </Suspense>
+      )}
+      {panel === "canvas" && (
+        <Suspense fallback={<aside className="lab"><span className="spinner" aria-label="Loading canvas" /></aside>}>
+          <Canvas
+            lessonId={lesson.id}
+            pendingMermaid={pendingMermaid}
+            onMermaidPlaced={clearPendingMermaid}
+            onClose={() => setPanel(null)}
+          />
         </Suspense>
       )}
       </div>
+      </CanvasBridge.Provider>
 
       <AnimatePresence>
         {celebrating && <Celebration title={lesson.title} hasNext={!!view.next_id} onDone={afterCelebration} />}
@@ -384,6 +410,15 @@ function Turn({ message, streaming }: { message: Message; streaming?: boolean })
           remarkPlugins={[remarkGfm, remarkEmojiIcons]}
           components={{
             i: MdIcon as never,
+            pre: ({ node, children }) => {
+              const codeEl = node?.children?.[0] as { tagName?: string; properties?: { className?: unknown }; children?: { value?: string }[] } | undefined;
+              const cls = codeEl?.properties?.className;
+              if (codeEl?.tagName === "code" && Array.isArray(cls) && cls.includes("language-mermaid")) {
+                const src = (codeEl.children ?? []).map((c) => c.value ?? "").join("");
+                return <Diagram code={src} streaming={streaming} />;
+              }
+              return <pre>{children}</pre>;
+            },
             a: ({ href, children }) => {
               const m = href?.match(/^#cite-(\d+)$/);
               if (m) {

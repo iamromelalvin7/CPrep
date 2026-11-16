@@ -123,6 +123,8 @@ export type LabEvent =
   | { type: "done"; attemptId: number; provider: string; costUsd: number }
   | { type: "error"; message: string };
 
+export type CanvasState = { scene: string | null; task: string | null; critique: string | null };
+
 export const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -166,6 +168,20 @@ export const api = {
   writeNotes: (lessonId: number) => call<string>("write_notes", { lessonId }),
   notesPath: (lessonId: number) => call<string | null>("notes_path", { lessonId }),
   openNotes: (path: string | null) => call<void>("open_notes", { path }),
+  getCanvas: (lessonId: number) => call<CanvasState>("get_canvas", { lessonId }),
+  saveCanvas: (lessonId: number, scene: string) => call<void>("save_canvas", { lessonId, scene }),
+  canvasTask: (lessonId: number) => call<string>("canvas_task", { lessonId }),
+  critiqueCanvas: async (
+    lessonId: number,
+    description: string,
+    imagePng: string | null,
+    onEvent: (e: LabEvent) => void,
+  ) => {
+    if (!inTauri) return mockCritique(description, onEvent);
+    const ch = new Channel<LabEvent>();
+    ch.onmessage = onEvent;
+    await tauriInvoke("critique_canvas", { lessonId, description, imagePng, onEvent: ch });
+  },
   pickFolder: async (): Promise<string | null> => {
     if (!inTauri) return "C:\\Users\\you\\Desktop\\programming\\BACKEND JOURNEY";
     const { open } = await import("@tauri-apps/plugin-dialog");
@@ -277,6 +293,16 @@ def list_items():
     return {"items": []}
 \`\`\`
 
+Here is the path a request takes:
+
+\`\`\`mermaid
+flowchart LR
+  C["Client"] -->|"GET /api/items"| F["Flask app"]
+  F --> R["list_items()"]
+  R -->|"dict to JSON"| F
+  F -->|"200 OK"| C
+\`\`\`
+
 You already did this in your Tech With Tim project [S2]. Notice that returning a \`dict\` makes Flask send JSON automatically.
 
 **Check:** what status code does Flask send if a client calls \`POST /api/items\` on the route above?`;
@@ -368,6 +394,10 @@ async function mock<T>(cmd: string, args: Record<string, unknown>): Promise<T> {
     } satisfies RunOutput,
     write_notes: "C:\\Users\\you\\Documents\\CPrep Notes\\Backend Engineering\\06 Routes and views.md",
     notes_path: null,
+    get_canvas: { scene: null, task: null, critique: null } satisfies CanvasState,
+    save_canvas: null,
+    canvas_task:
+      "**Draw the path of one request** through a Flask API that reads from a database.\n\n- The client, the Flask app and the database as separate boxes\n- Arrows for the request and the response, labelled with the HTTP method and status code\n- Where the route function runs\n- What happens when the item doesn't exist (404)",
     submit_placement: { correct: 1, total: 2, topics: [], strong: [], weak: [], review: [] },
   };
   if (cmd === "retake_lesson") mockMessages = [];
@@ -424,6 +454,17 @@ async function mockSubmit(code: string, onEvent: (e: LabEvent) => void) {
     onEvent({ type: "delta", text: w });
   }
   onEvent({ type: "done", attemptId: Date.now(), provider: "Mock · browser", costUsd: 0 });
+}
+
+async function mockCritique(description: string, onEvent: (e: LabEvent) => void) {
+  const text = description.includes("→")
+    ? "**What works**\n- Client, app and database are separate, and the request flows left to right.\n\n**Missing or wrong**\n- The response arrow back to the client has no status code.\n- Nothing shows the 404 path when the item doesn't exist.\n\n**Next step:** add a dashed arrow from the app back to the client labelled `404 Not Found`."
+    : "**The canvas is nearly empty.** Start with three boxes: the client, your Flask app and the database, then connect them with arrows for the request.";
+  for (const w of text.split(/(\s+)/)) {
+    await new Promise((r) => setTimeout(r, 6));
+    onEvent({ type: "delta", text: w });
+  }
+  onEvent({ type: "done", attemptId: 0, provider: "Mock · browser", costUsd: 0 });
 }
 
 async function mockChat(text: string, onEvent: (e: ChatEvent) => void) {

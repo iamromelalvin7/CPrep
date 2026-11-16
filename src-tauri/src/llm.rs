@@ -17,6 +17,42 @@ const GROQ_BASE: &str = "https://api.groq.com/openai/v1";
 pub struct ChatMsg {
     pub role: String,
     pub content: String,
+    /// Optional PNG (base64) sent with this message to providers that can see images.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_png: Option<String>,
+}
+
+impl ChatMsg {
+    pub fn text(role: &str, content: impl Into<String>) -> Self {
+        ChatMsg { role: role.into(), content: content.into(), image_png: None }
+    }
+
+    fn claude(&self) -> Value {
+        match &self.image_png {
+            Some(img) => json!({"role": self.role, "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": img}},
+                {"type": "text", "text": self.content}
+            ]}),
+            None => json!({"role": self.role, "content": self.content}),
+        }
+    }
+
+    fn openai(&self) -> Value {
+        match &self.image_png {
+            Some(img) => json!({"role": self.role, "content": [
+                {"type": "text", "text": self.content},
+                {"type": "image_url", "image_url": {"url": format!("data:image/png;base64,{img}")}}
+            ]}),
+            None => json!({"role": self.role, "content": self.content}),
+        }
+    }
+
+    fn ollama(&self) -> Value {
+        match &self.image_png {
+            Some(img) => json!({"role": self.role, "content": self.content, "images": [img]}),
+            None => json!({"role": self.role, "content": self.content}),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -187,6 +223,15 @@ pub fn strip_think(text: &str) -> String {
 }
 
 impl Provider {
+    /// Whether this provider/model accepts images. Groq's default text model and local models don't.
+    pub fn sees_images(&self) -> bool {
+        match self {
+            Provider::Claude { .. } => true,
+            Provider::OpenAiCompat { name, .. } => *name == "gemini",
+            Provider::Ollama { .. } => false,
+        }
+    }
+
     pub fn label(&self) -> String {
         match self {
             Provider::Claude { model, .. } => format!("Claude · {model}"),
@@ -335,7 +380,7 @@ Reply with only a JSON object matching this JSON Schema:
                     "cache_control": {"type": "ephemeral"},
                     "system": system,
                     "output_config": {"effort": "low"},
-                    "messages": messages,
+                    "messages": messages.iter().map(ChatMsg::claude).collect::<Vec<_>>(),
                 });
                 let resp = send_retrying(|| {
                     client().post(ANTHROPIC_URL).header("x-api-key", key).header("anthropic-version", ANTHROPIC_VERSION).json(&body)
@@ -380,7 +425,7 @@ Reply with only a JSON object matching this JSON Schema:
             Provider::Ollama { host, model } => {
                 let model = resolve_ollama_model(host, model).await?;
                 let mut msgs = vec![json!({"role": "system", "content": system})];
-                msgs.extend(messages.iter().map(|m| json!({"role": m.role, "content": m.content})));
+                msgs.extend(messages.iter().map(ChatMsg::ollama));
                 let body = json!({
                     "model": model,
                     "stream": true,
@@ -416,7 +461,7 @@ Reply with only a JSON object matching this JSON Schema:
             }
             Provider::OpenAiCompat { name, base, key, model } => {
                 let mut msgs = vec![json!({"role": "system", "content": system})];
-                msgs.extend(messages.iter().map(|m| json!({"role": m.role, "content": m.content})));
+                msgs.extend(messages.iter().map(ChatMsg::openai));
                 let body = json!({"model": model, "stream": true, "messages": msgs});
                 let url = format!("{base}/chat/completions");
                 let resp = send_retrying(|| client().post(&url).bearer_auth(key).json(&body)).await?;

@@ -429,7 +429,7 @@ to understand it. Don't repeat the lesson title as a heading or subtitle; start 
         if sources.is_empty() { "none".into() } else { sources.join("; ") },
         transcript
     );
-    let (body, usage) = provider.stream_chat(system, &[ChatMsg { role: "user".into(), content: user }], |_| {}).await?;
+    let (body, usage) = provider.stream_chat(system, &[ChatMsg { role: "user".into(), content: user, image_png: None }], |_| {}).await?;
     let body = body.trim();
     if body.is_empty() {
         bail!("The model returned empty notes. Try again.");

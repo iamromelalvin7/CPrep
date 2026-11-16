@@ -1,5 +1,6 @@
 //! CPrep: Tauri commands wiring the UI to the Rust core.
 
+pub mod canvas;
 pub mod config;
 pub mod db;
 pub mod ingest;
@@ -527,7 +528,7 @@ async fn submit_code(state: State<'_, AppState>, exercise_id: i64, code: String,
     let provider = llm::route(&state.cfg, state.live.load(Ordering::Relaxed), Task::Tutor).map_err(err)?;
     let (system, user) = lab::feedback_prompt(&ex, &code, &grade, attempt_no);
     let result = provider
-        .stream_chat(&system, &[llm::ChatMsg { role: "user".into(), content: user }], |t| {
+        .stream_chat(&system, &[llm::ChatMsg { role: "user".into(), content: user, image_png: None }], |t| {
             let _ = on_event.send(LabEvent::Delta { text: t.to_string() });
         })
         .await;
@@ -576,6 +577,74 @@ fn open_notes(path: Option<String>) -> CmdResult<()> {
     tauri_plugin_opener::open_path(canon, None::<&str>).map_err(err)
 }
 
+// ---------- Canvas ----------
+
+#[tauri::command]
+fn get_canvas(state: State<'_, AppState>, lesson_id: i64) -> CmdResult<canvas::CanvasState> {
+    canvas::load(&state.db.lock().unwrap(), lesson_id).map_err(err)
+}
+
+#[tauri::command]
+fn save_canvas(state: State<'_, AppState>, lesson_id: i64, scene: String) -> CmdResult<()> {
+    canvas::save_scene(&state.db.lock().unwrap(), lesson_id, &scene).map_err(err)
+}
+
+#[tauri::command]
+async fn canvas_task(state: State<'_, AppState>, lesson_id: i64) -> CmdResult<String> {
+    let t = lesson_track(&state, lesson_id)?;
+    let lesson = tutor::get_lesson(&state.db.lock().unwrap(), lesson_id).map_err(err)?;
+    let provider = llm::route(&state.cfg, state.live.load(Ordering::Relaxed), Task::Tutor).map_err(err)?;
+    let (system, user) = canvas::task_prompt(t, &lesson);
+    let (task, usage) = provider
+        .stream_chat(&system, &[llm::ChatMsg::text("user", user)], |_| {})
+        .await
+        .map_err(err)?;
+    let task = task.trim().to_string();
+    let conn = state.db.lock().unwrap();
+    db::record_usage(&conn, &usage).map_err(err)?;
+    canvas::save_task(&conn, lesson_id, &task).map_err(err)?;
+    Ok(task)
+}
+
+/// Stream a critique of the learner's drawing. `description` is the text structure of the scene;
+/// `image_png` (base64) is used only by providers that can see images.
+#[tauri::command]
+async fn critique_canvas(
+    state: State<'_, AppState>,
+    lesson_id: i64,
+    description: String,
+    image_png: Option<String>,
+    on_event: Channel<LabEvent>,
+) -> CmdResult<()> {
+    let t = lesson_track(&state, lesson_id)?;
+    let (lesson, saved) = {
+        let conn = state.db.lock().unwrap();
+        (tutor::get_lesson(&conn, lesson_id).map_err(err)?, canvas::load(&conn, lesson_id).map_err(err)?)
+    };
+    let provider = llm::route(&state.cfg, state.live.load(Ordering::Relaxed), Task::Tutor).map_err(err)?;
+    let image = image_png.filter(|_| provider.sees_images());
+    let (system, user) = canvas::critique_prompt(t, &lesson, saved.task.as_deref(), &description, image.is_some());
+    let msg = llm::ChatMsg { role: "user".into(), content: user, image_png: image };
+    let result = provider
+        .stream_chat(&system, &[msg], |d| {
+            let _ = on_event.send(LabEvent::Delta { text: d.to_string() });
+        })
+        .await;
+    match result {
+        Ok((critique, usage)) => {
+            let conn = state.db.lock().unwrap();
+            db::record_usage(&conn, &usage).map_err(err)?;
+            canvas::save_critique(&conn, lesson_id, critique.trim()).map_err(err)?;
+            let _ = on_event.send(LabEvent::Done { attempt_id: 0, provider: provider.label_for(&usage), cost_usd: usage.cost_usd() });
+            Ok(())
+        }
+        Err(e) => {
+            let _ = on_event.send(LabEvent::Error { message: e.to_string() });
+            Err(err(e))
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -619,6 +688,10 @@ pub fn run() {
             write_notes,
             notes_path,
             open_notes,
+            get_canvas,
+            save_canvas,
+            canvas_task,
+            critique_canvas,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

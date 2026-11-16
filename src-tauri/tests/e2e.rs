@@ -123,7 +123,7 @@ async fn gemini_smoke() {
     println!("QUIZ {} questions in {:.0?}", qs.len(), t0.elapsed());
     let mut pieces = 0;
     let (reply, _) = provider
-        .stream_chat("You are a concise tutor.", &[llm::ChatMsg { role: "user".into(), content: "What is a subnet mask, in two sentences?".into() }], |_| pieces += 1)
+        .stream_chat("You are a concise tutor.", &[llm::ChatMsg { role: "user".into(), content: "What is a subnet mask, in two sentences?".into(), image_png: None }], |_| pieces += 1)
         .await
         .unwrap();
     println!("STREAM {pieces} pieces: {reply}");
@@ -183,7 +183,7 @@ async fn lab_flow() {
         .unwrap();
     println!("WRONG ATTEMPT GRADE {}/{}:\n{wrong}", grade.passed, grade.total);
     let (system, user) = cprep_lib::lab::feedback_prompt(&ex, &wrong, &grade, 1);
-    let (review, _) = provider.stream_chat(&system, &[llm::ChatMsg { role: "user".into(), content: user }], |_| {}).await.unwrap();
+    let (review, _) = provider.stream_chat(&system, &[llm::ChatMsg { role: "user".into(), content: user, image_png: None }], |_| {}).await.unwrap();
     println!("REVIEW:\n{review}");
     assert!(!review.trim().is_empty());
 
@@ -210,4 +210,40 @@ async fn lab_flow() {
 
     drop(db);
     let _ = std::fs::remove_file(&tmp);
+}
+
+/// Canvas: a drawing task and a critique of a described (text-only) diagram.
+/// Run with: cargo test --test e2e canvas_flow -- --ignored --nocapture
+#[tokio::test]
+#[ignore]
+async fn canvas_flow() {
+    let cfg = Config::load();
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    db::init(&conn).unwrap();
+    let c = tutor::validate_curriculum(serde_json::json!({
+        "title": "System design", "summary": "s",
+        "phases": [{"title": "Scaling", "goal": "g", "modules": [{"title": "Caching", "tested_out": false, "lessons": [
+            {"title": "Caching a read-heavy API", "objectives": ["Cache-aside pattern", "Cache invalidation", "TTL choice"]}
+        ]}]}]
+    }))
+    .unwrap();
+    let cid = tutor::save_curriculum(&conn, "system-design", &c).unwrap();
+    let lesson = tutor::get_lesson(&conn, conn.query_row("SELECT id FROM lessons WHERE curriculum_id = ?1", [cid], |r| r.get(0)).unwrap()).unwrap();
+    let track = db::track("system-design").unwrap();
+    let provider = llm::route(&cfg, false, llm::Task::Tutor).unwrap();
+    println!("PROVIDER {} (sees images: {})", provider.label(), provider.sees_images());
+
+    let (system, user) = cprep_lib::canvas::task_prompt(track, &lesson);
+    let t0 = Instant::now();
+    let (task, _) = provider.stream_chat(&system, &[llm::ChatMsg::text("user", user)], |_| {}).await.unwrap();
+    println!("TASK in {:.0?}:\n{task}", t0.elapsed());
+    assert!(!task.trim().is_empty());
+
+    // A deliberately incomplete design: no cache yet.
+    let description = "Shapes (top to bottom, left to right):\n- rectangle \"Client\"\n- rectangle \"API server\"\n- rectangle \"Postgres\"\nConnections:\n- \"Client\" → \"API server\" [label \"GET /products/42\"]\n- \"API server\" → \"Postgres\" [label \"SELECT\"]";
+    let (system, user) = cprep_lib::canvas::critique_prompt(track, &lesson, Some(&task), description, false);
+    let t0 = Instant::now();
+    let (review, _) = provider.stream_chat(&system, &[llm::ChatMsg::text("user", user)], |_| {}).await.unwrap();
+    println!("CRITIQUE in {:.0?}:\n{review}", t0.elapsed());
+    assert!(review.to_lowercase().contains("cache"), "critique should notice the missing cache");
 }

@@ -2,7 +2,7 @@
 
 **Goal:** Personal local-first AI tutor desktop app for career prep (backend, AI eng, networking, AI automation, DSA, system design, interviews). Full design: `PLAN.md`.
 
-**Current state (2026-11-15):** Phase 0 built: Tauri 2 app with folder ingestion + RAG, LLM router (Claude / Ollama / Gemini / Groq), placement quiz, curriculum design, streaming lesson chat with margin citations, settings. Phase 1 (code lab + study notes) built 2026-11-16. Phases 2–5 (canvas, scheduler/notifications, voice, slides/dashboard) not started.
+**Current state (2026-11-15):** Phase 0 built: Tauri 2 app with folder ingestion + RAG, LLM router (Claude / Ollama / Gemini / Groq), placement quiz, curriculum design, streaming lesson chat with margin citations, settings. Phase 1 (code lab + study notes) and Phase 2 (canvas + diagrams) built 2026-11-16. Phases 3–5 (scheduler/notifications, voice, slides/dashboard) not started.
 
 **Run it:**
 - `npm run tauri dev` (Vite on port **1420**, not 5173).
@@ -30,4 +30,6 @@ If the app is running, `cargo test` can't overwrite `target/debug/cprep.exe`: us
 
 **Code lab (Phase 1, 2026-11-16):** `runner.rs` runs ONLY the learner's code (Python via `py -3`, Node, `java File.java`, SQL in in-memory rusqlite with a progress-handler timeout), 10 s limit. AI exercises are data: function tests (`args`/`expected`), output tests (stdin/stdout), query tests (rows), fed through fixed harnesses (`PY_HARNESS`, `JS_HARNESS`). Never execute model-written code. `lab.rs`: exercise generation (strict JSON; tests arrive as JSON strings), review prompt (hints only before attempt 3; the rule is appended next to the code), unchanged-starter short-circuit (no model call), notes written to `Documents/CPrep Notes/<track>/NN <lesson>.md` (override with `NOTES_DIR`). UI: `views/Lab.tsx`, lazy-loaded; Monaco set up in `src/monaco.ts` (core + 4 languages, offline). Ctrl+Enter runs, Ctrl+Shift+Enter submits. Mark complete also writes notes in the background. Read `last_insert_rowid()` before any other insert (usage rows) — that bug shipped once.
 
-**Next:** Phase 2 — canvas (Excalidraw + Mermaid), tutor drawing tools, diagram critique.
+**Canvas (Phase 2, 2026-11-16):** the tutor may add one ```mermaid block per reply (prompt rule in `lesson_system_prompt`); `views/Diagram.tsx` renders it lazily with Mermaid `securityLevel: "strict"` (model output) and offers "Open on canvas" via the `CanvasBridge` context. `views/Canvas.tsx` (lazy) is Excalidraw 0.18, scene saved per lesson in `canvases`; Mermaid → shapes via `@excalidraw/mermaid-to-excalidraw`. Fonts are bundled in `public/excalidraw-assets/fonts` (CJK Xiaolai omitted, 13 MB) and `EXCALIDRAW_ASSET_PATH` points there, so it works offline. Critique: `src/describeScene.ts` turns the scene into text (shapes, labels, arrows with bindings or nearest-shape fallback) so text-only Groq can judge it; a PNG goes along only when `Provider::sees_images()` (Claude, Gemini). `ChatMsg.image_png` carries it per provider format. The side panel is one of `practice | canvas` (localStorage `cprep.panel`). In dev, `window.__excal` exposes the Excalidraw API for UI checks. First lazy import of Excalidraw makes Vite re-optimize deps and reload the page once.
+
+**Next:** Phase 3 — scheduler, tray, Windows notifications, autostart, spaced-repetition review cards.

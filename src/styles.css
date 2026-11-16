@@ -964,3 +964,51 @@ kbd {
 }
 /* Long results must scroll the panel, never squash the editor. */
 .lab-body > * { flex-shrink: 0; }
+
+/* ---------- Diagrams in tutor replies ---------- */
+
+.diagram {
+  margin: 1em 0;
+  padding: 14px 16px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: var(--bg-sunken);
+}
+.diagram-svg { display: flex; justify-content: center; overflow-x: auto; }
+.diagram-svg svg { max-width: 100%; height: auto; }
+.diagram figcaption { display: flex; justify-content: flex-end; margin-top: 4px; }
+.diagram-pending { font-family: var(--font-ui); font-size: 0.82rem; color: var(--text-faint); padding: 10px 0; }
+.diagram pre { margin: 0; }
+
+/* ---------- Canvas panel ---------- */
+
+@media (min-width: 1100px) {
+  .lesson-body[data-panel="canvas"] { grid-template-columns: minmax(0, 1fr) minmax(480px, 58%); }
+}
+.canvas-panel .grow { flex: 1; }
+.canvas-task { border-bottom: 1px solid var(--line); padding: 8px 16px 10px; max-height: 32vh; overflow-y: auto; }
+.canvas-task-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 0; background: none; cursor: pointer;
+  color: var(--accent-primary); font-weight: 600; font-size: 0.82rem;
+  padding: 2px 0;
+}
+.canvas-task-toggle[aria-expanded="true"] .nav-chevron { transform: rotate(90deg); }
+.canvas-task .lab-prompt { margin-top: 6px; }
+.canvas-task .lab-prompt ul { margin: 4px 0; padding-left: 1.2em; }
+.canvas-error { margin: 8px 16px 0; }
+.canvas-status { margin: 6px 16px 0; }
+.canvas-stage { flex: 1; min-height: 320px; position: relative; display: grid; place-items: stretch; }
+.canvas-stage > .spinner { place-self: center; }
+.canvas-stage .excalidraw { --color-primary: #f0c35a; --color-primary-darker: #e0b04a; --color-primary-darkest: #c99a35; --color-primary-light: #f5d488; }
+.canvas-stage .excalidraw.theme--dark { --color-primary: #f0c35a; --color-primary-light: #f5d488; }
+.canvas-critique {
+  border-top: 1px solid var(--line-strong);
+  background: var(--bg-raised);
+  padding: 10px 16px 14px;
+  max-height: 40%;
+  overflow-y: auto;
+}
+.canvas-critique-head { display: flex; justify-content: space-between; align-items: center; font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px; }
+.canvas-critique .prose { font-size: 1rem; }
+.diagram figcaption .btn, .canvas-panel .btn { font-family: var(--font-ui); }

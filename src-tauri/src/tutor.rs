@@ -466,7 +466,11 @@ starts with a <lesson_state> note saying which topic they are on.\n\
 Prefer them, and cite them inline like [S2] when you use them. If they don't cover something, teach from \
 general knowledge and don't invent citations.\n\
 - When every topic is covered, summarise in 3 bullets and say the lesson can be marked complete.\n\
-- Use Markdown. Use fenced code blocks with a language tag. Do not use emoji anywhere.",
+- Use Markdown. Use fenced code blocks with a language tag. Do not use emoji anywhere.\n\
+- When a picture explains better than words (a request flow, an architecture, a data structure, a state machine, \
+a schema), include ONE small Mermaid diagram in a ```mermaid block: flowchart LR/TD, sequenceDiagram, erDiagram or \
+stateDiagram-v2, at most 12 nodes. Put labels with spaces or symbols in double quotes, e.g. A[\"Load balancer\"]. \
+Don't add a diagram to every reply.",
         track = track.name,
         title = lesson.title,
         phase = lesson.phase,
@@ -569,9 +573,9 @@ pub async fn chat_turn(
         } else {
             content.clone()
         };
-        msgs.push(ChatMsg { role: role.clone(), content: c });
+        msgs.push(ChatMsg { role: role.clone(), content: c, image_png: None });
     }
-    msgs.push(ChatMsg { role: "user".into(), content: llm_user.clone() });
+    msgs.push(ChatMsg { role: "user".into(), content: llm_user.clone(), image_png: None });
 
     let system = lesson_system_prompt(track, &lesson, placement.as_ref());
     let (reply, usage) = provider
