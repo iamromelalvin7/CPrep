@@ -459,6 +459,53 @@ to understand it. Don't repeat the lesson title as a heading or subtitle; start 
     Ok((file, usage))
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct NoteEntry {
+    pub lesson_id: i64,
+    pub title: String,
+    pub track_id: String,
+    pub phase: String,
+    pub module: String,
+    pub path: String,
+    pub created_at: String,
+}
+
+/// Every lesson with saved notes whose file still exists.
+pub fn list_notes(conn: &Connection) -> Result<Vec<NoteEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT n.lesson_id, l.title, c.track_id, l.phase, l.module, n.path, n.created_at
+         FROM notes n JOIN lessons l ON l.id = n.lesson_id JOIN curricula c ON c.id = l.curriculum_id
+         ORDER BY c.track_id, l.ord",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(NoteEntry {
+            lesson_id: r.get(0)?,
+            title: r.get(1)?,
+            track_id: r.get(2)?,
+            phase: r.get(3)?,
+            module: r.get(4)?,
+            path: r.get(5)?,
+            created_at: r.get(6)?,
+        })
+    })?;
+    Ok(rows
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|n| std::path::Path::new(&n.path).is_file())
+        .collect())
+}
+
+/// Read a lesson's notes file. Only files inside the notes folder are read.
+pub fn read_notes(conn: &Connection, lesson_id: i64) -> Result<String> {
+    let path = notes_path(conn, lesson_id)?.ok_or_else(|| anyhow::anyhow!("No notes for this lesson yet."))?;
+    let root = notes_dir().canonicalize()?;
+    let file = std::path::Path::new(&path).canonicalize()?;
+    if !file.starts_with(&root) {
+        bail!("That notes file is outside your notes folder.");
+    }
+    Ok(std::fs::read_to_string(file)?)
+}
+
 pub fn notes_path(conn: &Connection, lesson_id: i64) -> Result<Option<String>> {
     Ok(conn
         .query_row("SELECT path FROM notes WHERE lesson_id = ?1", [lesson_id], |r| r.get::<_, String>(0))

@@ -26,7 +26,9 @@ fn var(name: &str) -> Option<String> {
 
 /// Look for `.env` in the working directory and its parents (dev runs from `src-tauri`),
 /// then next to the executable (installed builds).
-fn find_env() -> Option<PathBuf> {
+/// Order: the working directory and its parents, then next to the executable (dev and portable runs),
+/// then the app's data folder (installed builds, which live in Program Files or AppData).
+fn find_env(app_data: Option<&std::path::Path>) -> Option<PathBuf> {
     let mut starts: Vec<PathBuf> = vec![];
     if let Ok(cwd) = std::env::current_dir() {
         starts.push(cwd);
@@ -44,12 +46,17 @@ fn find_env() -> Option<PathBuf> {
             }
         }
     }
-    None
+    app_data.map(|d| d.join(".env")).filter(|p| p.is_file())
 }
 
 impl Config {
     pub fn load() -> Self {
-        let env_path = find_env();
+        Self::load_from(None)
+    }
+
+    /// `app_data`: the app's data folder, checked first for a `.env` (used by installed builds).
+    pub fn load_from(app_data: Option<&std::path::Path>) -> Self {
+        let env_path = find_env(app_data);
         if let Some(p) = &env_path {
             let _ = dotenvy::from_path_override(p);
         }

@@ -7,6 +7,8 @@ import LessonView from "./views/Lesson";
 import SettingsView from "./views/Settings";
 import Schedule from "./views/Schedule";
 import Review from "./views/Review";
+import Today from "./views/Today";
+import Notes from "./views/Notes";
 
 // The interview room loads Monaco, so it is only fetched when opened.
 const InterviewRoom = lazy(() => import("./views/Interview"));
@@ -18,7 +20,9 @@ export type Route =
   | { kind: "settings" }
   | { kind: "schedule" }
   | { kind: "review" }
-  | { kind: "interview" };
+  | { kind: "interview" }
+  | { kind: "today" }
+  | { kind: "notes" };
 
 const SIDEBAR_KEY = "cprep.sidebar";
 
@@ -33,7 +37,7 @@ function readCollapsed() {
 export default function App() {
   const [tracks, setTracks] = useState<TrackSummary[]>([]);
   const [settings, setSettings] = useState<SettingsT | null>(null);
-  const [route, setRoute] = useState<Route>({ kind: "track", trackId: "backend" });
+  const [route, setRoute] = useState<Route>({ kind: "today" });
   const [menuOpen, setMenuOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const [progress, setProgress] = useState<LessonProgress | null>(null);
@@ -42,10 +46,12 @@ export default function App() {
   const reduce = useReducedMotion();
 
   const refresh = useCallback(async () => {
-    const [t, s, r] = await Promise.all([api.listTracks(), api.getSettings(), api.reviewSummary().catch(() => null)]);
-    setTracks(t);
-    setSettings(s);
-    setDueCards(r?.due_now ?? 0);
+    // Each piece updates as soon as it arrives: settings check Ollama and can be slower than the rest.
+    await Promise.all([
+      api.listTracks().then(setTracks),
+      api.getSettings().then(setSettings),
+      api.reviewSummary().then((r) => setDueCards(r.due_now)).catch(() => setDueCards(0)),
+    ]);
     setNavKey((k) => k + 1);
   }, []);
 
@@ -115,6 +121,11 @@ export default function App() {
         ) : (
           <>
           <div className="nav-tools">
+            <button className="track-link" aria-current={route.kind === "today" ? "page" : undefined} onClick={() => go({ kind: "today" })}>
+              <Icon name="spark" size={14} />
+              <span>Today</span>
+              <span />
+            </button>
             <button className="track-link" aria-current={route.kind === "schedule" ? "page" : undefined} onClick={() => go({ kind: "schedule" })}>
               <Icon name="calendar" size={14} />
               <span>Schedule</span>
@@ -128,6 +139,11 @@ export default function App() {
             <button className="track-link" aria-current={route.kind === "interview" ? "page" : undefined} onClick={() => go({ kind: "interview" })}>
               <Icon name="interview" size={14} />
               <span>Mock interview</span>
+              <span />
+            </button>
+            <button className="track-link" aria-current={route.kind === "notes" ? "page" : undefined} onClick={() => go({ kind: "notes" })}>
+              <Icon name="notes" size={14} />
+              <span>Notes</span>
               <span />
             </button>
           </div>
@@ -183,6 +199,14 @@ export default function App() {
             transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
           >
             {route.kind === "settings" && <SettingsView settings={settings} onChange={refresh} />}
+            {route.kind === "today" && (
+              <Today
+                tracks={tracks}
+                onOpenLesson={(trackId, lessonId) => go({ kind: "lesson", trackId, lessonId })}
+                onGo={(kind) => go({ kind })}
+              />
+            )}
+            {route.kind === "notes" && <Notes tracks={tracks} />}
             {route.kind === "schedule" && <Schedule tracks={tracks} onChanged={refresh} />}
             {route.kind === "review" && <Review tracks={tracks} onChanged={refresh} />}
             {route.kind === "interview" && (

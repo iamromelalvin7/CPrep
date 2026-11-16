@@ -376,3 +376,43 @@ async fn interview_flow() {
     assert!((1..=5).contains(&v["overall"].as_i64().unwrap()));
     assert!(interview::get(&db.lock().unwrap(), id).unwrap().ended_at.is_some());
 }
+
+/// Dashboard and notes queries against a COPY of the real app database.
+/// Run with: cargo test --test e2e dashboard_real_db -- --ignored --nocapture
+#[test]
+#[ignore]
+fn dashboard_real_db() {
+    let src = std::path::PathBuf::from(std::env::var("APPDATA").unwrap()).join("com.romel.cprep").join("cprep.db");
+    if !src.is_file() {
+        println!("no real database; skipping");
+        return;
+    }
+    let copy = std::env::temp_dir().join(format!("cprep-dash-{}.db", uuid::Uuid::new_v4()));
+    // Use SQLite's backup so a WAL-mode database is copied consistently.
+    {
+        let from = rusqlite::Connection::open_with_flags(&src, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        from.execute("VACUUM INTO ?1", [copy.to_string_lossy()]).unwrap();
+    }
+    let conn = db::open(&copy).unwrap();
+    let d = cprep_lib::dashboard::build(&conn).unwrap();
+    println!(
+        "streak={} active30={} tracks={:?} cards={} retention={:?} exercises={}/{} interviews={} upcoming={} next={:?} spend=${:.4} models={:?}",
+        d.streak,
+        d.active_days_30,
+        d.tracks.iter().map(|t| format!("{} {}/{}", t.id, t.done, t.total)).collect::<Vec<_>>(),
+        d.review.total,
+        d.retention_30d,
+        d.exercises_solved,
+        d.exercises_tried,
+        d.interviews.len(),
+        d.upcoming.len(),
+        d.next_lesson.as_ref().map(|n| &n.title),
+        d.spend.total_usd,
+        d.spend.by_model
+    );
+    println!("activity (last 10 days): {:?}", d.activity.iter().rev().take(10).map(|a| a.count).collect::<Vec<_>>());
+    let notes = cprep_lib::lab::list_notes(&conn).unwrap();
+    println!("notes: {:?}", notes.iter().map(|n| &n.title).collect::<Vec<_>>());
+    drop(conn);
+    let _ = std::fs::remove_file(&copy);
+}

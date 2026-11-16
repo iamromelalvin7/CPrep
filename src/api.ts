@@ -194,6 +194,22 @@ export type Interview = {
 export type InterviewTurn = { id: number; role: "user" | "assistant"; content: string; code: string | null; created_at: string };
 export type InterviewView = { interview: Interview; turns: InterviewTurn[] };
 
+export type Dashboard = {
+  activity: { date: string; count: number }[];
+  streak: number;
+  active_days_30: number;
+  tracks: { id: string; name: string; accent: string; done: number; total: number }[];
+  review: ReviewSummary;
+  retention_30d: number | null;
+  exercises_tried: number;
+  exercises_solved: number;
+  interviews: { id: number; kind: InterviewKind; date: string; overall: number }[];
+  upcoming: Occurrence[];
+  next_lesson: { track_id: string; lesson_id: number; title: string; status: string } | null;
+  spend: { total_usd: number; claude_usd: number; month_usd: number; budget_usd: number; by_model: [string, number, number][] };
+};
+export type NoteEntry = { lesson_id: number; title: string; track_id: string; phase: string; module: string; path: string; created_at: string };
+
 export const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -278,6 +294,9 @@ export const api = {
     await tauriInvoke("interview_turn", { id, text, code, onEvent: ch });
   },
   endInterview: (id: number) => call<Debrief>("end_interview", { id }),
+  getDashboard: () => call<Dashboard>("get_dashboard"),
+  listNotes: () => call<NoteEntry[]>("list_notes"),
+  readNotes: (lessonId: number) => call<string>("read_notes", { lessonId }),
   pickFolder: async (): Promise<string | null> => {
     if (!inTauri) return "C:\\Users\\you\\Desktop\\programming\\BACKEND JOURNEY";
     const { open } = await import("@tauri-apps/plugin-dialog");
@@ -527,6 +546,12 @@ async function mock<T>(cmd: string, args: Record<string, unknown>): Promise<T> {
     speak: null,
     transcribe: "I would use a hash map from value to index, so each lookup is constant time.",
     list_interviews: mockInterviews,
+    get_dashboard: mockDashboard(),
+    list_notes: [
+      { lesson_id: 1, title: "Routes and URL rules", track_id: "backend", phase: "Building APIs", module: "Flask", path: "C:\\Users\\you\\Documents\\CPrep Notes\\Backend Engineering\\01 Routes and URL rules.md", created_at: new Date(Date.now() - 2 * 86400000).toISOString() },
+      { lesson_id: 2, title: "Functions and Modules", track_id: "backend", phase: "Foundations", module: "Python Core Basics", path: "C:\\Users\\you\\Documents\\CPrep Notes\\Backend Engineering\\02 Functions and Modules.md", created_at: new Date(Date.now() - 86400000).toISOString() },
+    ] satisfies NoteEntry[],
+    read_notes: mockNotes,
     get_reminders: { offsets: [30, 15, 0], review_time: "19:00", keep_in_tray: true, autostart: false } satisfies ReminderSettings,
     save_reminders: null,
     test_notification: null,
@@ -685,6 +710,82 @@ async function mockInterviewTurn(id: number, text: string, code: string | null, 
   turns.push({ id: Date.now() + 1, role: "assistant", content: reply, code: null, created_at: "" });
   onEvent({ type: "done", attemptId: Date.now(), provider: "Mock · browser", costUsd: 0 });
 }
+
+function mockDashboard(): Dashboard {
+  const days = 84;
+  const activity = Array.from({ length: days }, (_, i) => {
+    const d = new Date();
+    d.setDate(d.getDate() - (days - 1 - i));
+    const recent = i > days - 22;
+    const count = recent ? [0, 3, 8, 14, 5, 22, 0, 11][i % 8] : i % 5 === 0 ? 4 : 0;
+    return { date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`, count };
+  });
+  return {
+    activity,
+    streak: 4,
+    active_days_30: 17,
+    tracks: [
+      { id: "backend", name: "Backend Engineering", accent: "#E8A33D", done: 5, total: 24 },
+      { id: "networking", name: "Networking", accent: "#4FB3A9", done: 2, total: 18 },
+      { id: "dsa", name: "Data Structures & Algorithms", accent: "#D9B44A", done: 0, total: 21 },
+    ],
+    review: { due_now: 2, total: 23, new_cards: 5, reviewed_today: 4, next_due: null, by_track: [["backend", 2]] },
+    retention_30d: 0.86,
+    exercises_tried: 7,
+    exercises_solved: 5,
+    interviews: [
+      { id: 3, kind: "technical", date: "2026-11-02", overall: 2 },
+      { id: 4, kind: "dsa", date: "2026-11-07", overall: 3 },
+      { id: 5, kind: "behavioral", date: "2026-11-11", overall: 3 },
+      { id: 6, kind: "dsa", date: "2026-11-15", overall: 4 },
+    ],
+    upcoming: mockAgenda(new Date().toISOString(), new Date(Date.now() + 7 * 86400000).toISOString()).slice(0, 3),
+    next_lesson: { track_id: "backend", lesson_id: 6, title: "Routes and views", status: "in_progress" },
+    spend: { total_usd: 0.0, claude_usd: 0.0, month_usd: 0.0, budget_usd: 25, by_model: [["openai/gpt-oss-120b", 0, 41], ["qwen/qwen3.8-27b", 0, 3]] },
+  };
+}
+
+const mockNotes = `# Routes and URL rules
+
+_Backend Engineering · Building APIs · Flask · written 2026-11-14_
+
+A route connects a URL and an HTTP method to the Python function that answers it.
+
+## Defining a route
+- \`@app.route("/path")\` registers the function below it.
+- The function's return value becomes the response body.
+- Returning a \`dict\` sends JSON automatically.
+
+\`\`\`python
+@app.route("/api/items", methods=["GET"])
+def list_items():
+    return {"items": []}
+\`\`\`
+
+## HTTP methods
+- A route accepts only \`GET\` unless you list more in \`methods=[...]\`.
+- Calling it with another method returns **405 Method Not Allowed**.
+- Branch on \`request.method\` when one route handles several methods.
+
+## Common mistakes
+- Forgetting \`methods=["POST"]\` and wondering why the form fails.
+- Returning \`None\` from a view: Flask raises an error instead of sending an empty page.
+
+## Check yourself
+1. What does Flask return for \`POST\` on a GET-only route?
+2. How do you accept both \`GET\` and \`POST\`?
+
+<details><summary>Answers</summary>
+
+1. 405 Method Not Allowed.
+2. \`methods=["GET", "POST"]\`, then branch on \`request.method\`.
+
+</details>
+
+## Sources
+- Quickstart — Flask Documentation (3.1.x).pdf, p. 2
+- flask-rest-api-tech-with-tim/app.py
+`;
 
 async function mockChat(text: string, onEvent: (e: ChatEvent) => void) {
   onEvent({ type: "sources", sources: mockSources });

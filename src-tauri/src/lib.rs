@@ -2,6 +2,7 @@
 
 pub mod canvas;
 pub mod config;
+pub mod dashboard;
 pub mod db;
 pub mod ingest;
 pub mod interview;
@@ -947,6 +948,23 @@ async fn end_interview(state: State<'_, AppState>, id: i64) -> CmdResult<serde_j
     Ok(v)
 }
 
+// ---------- Dashboard & notes library ----------
+
+#[tauri::command]
+fn get_dashboard(state: State<'_, AppState>) -> CmdResult<dashboard::Dashboard> {
+    dashboard::build(&state.db.lock().unwrap()).map_err(err)
+}
+
+#[tauri::command]
+fn list_notes(state: State<'_, AppState>) -> CmdResult<Vec<lab::NoteEntry>> {
+    lab::list_notes(&state.db.lock().unwrap()).map_err(err)
+}
+
+#[tauri::command]
+fn read_notes(state: State<'_, AppState>, lesson_id: i64) -> CmdResult<String> {
+    lab::read_notes(&state.db.lock().unwrap(), lesson_id).map_err(err)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -975,7 +993,7 @@ pub fn run() {
                 .optional()?
                 .as_deref()
                 == Some("1");
-            let cfg = Config::load();
+            let cfg = Config::load_from(Some(&dir));
             let live = live && cfg.anthropic_key.is_some();
             // The Kokoro sidecar script ships as a resource; in dev it is read from the source tree.
             let script = app
@@ -1046,6 +1064,9 @@ pub fn run() {
             list_interviews,
             interview_turn,
             end_interview,
+            get_dashboard,
+            list_notes,
+            read_notes,
             get_canvas,
             save_canvas,
             canvas_task,
